@@ -3952,3 +3952,1622 @@ def anchor_to_existing_candidates(original, observed):
         formal_event_count=None, formal_event_frequency_cpm=None,
         interpretation='Support-assisted ownership proposals only; no new independent waves or reviewed identities')
 ================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/partial_phase_events.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/patient_activity_aggregation.py | git_blob_sha=e63d565076d28e40e13229de257533f584eea137 ================
+"""One patient-level proposal ledger; cross-wall identity is not event truth.
+
+Reuse native sections and span+one-frame timing from existing ownership.
+Walls are separate measurement channels, not separate patient wave counts.
+"""
+from copy import deepcopy
+from itertools import combinations
+import numpy as np
+
+from analysis.mse_pregnancy_association.code.direction_identity_trial import reconcile_identity_then_direction
+
+
+def longest_adjacent(ids):
+    ids=np.asarray(sorted(set(ids)),int)
+    return max((len(b) for b in np.split(ids,np.flatnonzero(np.diff(ids)!=1)+1)),default=0)
+
+
+def candidate_nodes(salience, ownership):
+    nodes=[]
+    for wall_record in salience['walls']:
+        wall=wall_record['wall'];source=ownership['walls'][wall]['reconciliation']
+        lookup={e['event_proposal_id']:e for e in source['event_proposals']}
+        for score in wall_record['scores']:
+            if score['decision']!='salient_support':continue
+            e=lookup[score['event_proposal_id']];entity=source['source_evidence'][e['canonical_source_entity_id']]
+            arrival=dict(zip(e['supporting_sections'],e['arrival_time_s']))
+            ids=score['retained_sections']
+            profile={c:deepcopy(entity['profile'][c] if c in entity['profile'] else entity['profile'][str(c)]) for c in ids}
+            nodes.append(dict(node_id=f'wall{wall}/'+e['event_proposal_id'],wall=wall,
+                source_proposal_id=e['event_proposal_id'],canonical_source=e['canonical_source_entity_id'],
+                sections=ids,arrival={c:arrival[c] for c in ids},profile=profile,
+                direction=e['direction'],original_classification=e['canonical_measurement'].get('classification'),
+                arrival_marker=e['canonical_measurement'].get('arrival_marker'),
+                original_ownership_status=e['ownership_status']))
+    return nodes
+
+
+def compare_walls(a,b,span,dt):
+    if a['wall']==b['wall']:raise ValueError('Cross-wall comparison requires different walls')
+    shared=sorted(set(a['sections'])&set(b['sections']));tolerance=span+dt
+    matched=[];near=[];conflict=[]
+    for c in shared:
+        left,right=a['profile'][c],b['profile'][c]
+        same_sequence=[p['sign'] for p in left]==[p['sign'] for p in right]
+        pairs=[(p,q) for p in left for q in right if p['sign']==q['sign']]
+        peak_near=any(abs(p['peak_s']-q['peak_s'])<=tolerance for p,q in pairs)
+        comparable_arrival=a['arrival_marker']==b['arrival_marker']
+        arrival_near=comparable_arrival and abs(a['arrival'][c]-b['arrival'][c])<=tolerance
+        if peak_near or arrival_near:near.append(c)
+        if not same_sequence or not comparable_arrival:
+            if peak_near or arrival_near:conflict.append(c)
+            continue
+        # Each wall has its own continuity bounds. Their run indices need not
+        # equal: they describe different tissue, not the same material point.
+        valid=(all(p.get('epoch') is not None and q.get('epoch') is not None for p,q in pairs) and
+            all(abs(p['peak_s']-q['peak_s'])<=tolerance and
+                q['start_s']-dt<=p['peak_s']<=q['end_s']+dt and
+                p['start_s']-dt<=q['peak_s']<=p['end_s']+dt for p,q in pairs) and arrival_near)
+        if valid:matched.append(c)
+        elif peak_near or arrival_near:conflict.append(c)
+    direction_compatible=(a['direction']==b['direction'])
+    relation='shared_identity_supported' if (longest_adjacent(matched)>=3 and
+        len(matched)==len(shared) and not conflict and direction_compatible) else (
+        'unresolved' if near else 'no_shared_identity_evidence')
+    return dict(node_a=a['node_id'],node_b=b['node_id'],relation=relation,
+        shared_sections=shared,matched_sections=matched,near_sections=near,
+        phase_or_marker_conflict_sections=conflict,directions_compatible=direction_compatible,
+        tolerance_s=tolerance,reason=('phase order, peaks, local arrival and direction agree' if relation=='shared_identity_supported'
+            else 'partial/conflicting cross-wall evidence' if relation=='unresolved'
+            else 'insufficient corresponding native phase/arrival evidence'))
+
+
+def aggregate_nodes(nodes,span,dt):
+    comparisons=[compare_walls(a,b,span,dt) for a,b in combinations(nodes,2) if a['wall']!=b['wall']]
+    choices={n['node_id']:[] for n in nodes};uncertain={n['node_id']:[] for n in nodes}
+    for edge in comparisons:
+        a,b=edge['node_a'],edge['node_b']
+        if edge['relation']=='shared_identity_supported':choices[a].append(b);choices[b].append(a)
+        elif edge['relation']=='unresolved':uncertain[a].append(b);uncertain[b].append(a)
+    # No transitive or one-to-many merging of consecutive activities.
+    pairs={tuple(sorted((a,bs[0]))) for a,bs in choices.items() if len(bs)==1 and
+           choices[bs[0]]==[a] and not uncertain[a] and not uncertain[bs[0]]}
+    lookup={n['node_id']:n for n in nodes};used=set();groups=[]
+    for a,b in sorted(pairs):groups.append([lookup[a],lookup[b]]);used.update((a,b))
+    groups.extend([[n] for n in nodes if n['node_id'] not in used])
+    groups.sort(key=lambda group:(min(float(np.median(list(n['arrival'].values()))) for n in group),group[0]['node_id']))
+    ledger=[]
+    for index,group in enumerate(groups,1):
+        members=[n['node_id'] for n in group];known={n['direction'] for n in group if n['direction'] is not None}
+        direction=next(iter(known)) if len(known)==1 else None
+        unresolved=sorted({k for node in members for k in uncertain[node]+choices[node] if k not in members})
+        phases=[p for n in group for ps in n['profile'].values() for p in ps]
+        ledger.append(dict(patient_candidate_id=f'activity_{index:03d}',source_nodes=members,
+            walls=sorted({n['wall'] for n in group}),classification='propagation_candidate' if direction else 'local_or_unresolved_candidate',
+            direction=direction,source_measurements=deepcopy(group),cross_wall_merged=len(group)==2,
+            ownership_status='unresolved_cross_wall' if unresolved else 'shared_identity_proposal' if len(group)==2 else 'single_wall_proposal',
+            unresolved_related_nodes=unresolved,evidence_start_s=min(p['start_s'] for p in phases),
+            evidence_end_s=max(p['end_s'] for p in phases),reviewed=False))
+    # Conditional count range: how many identities remain if unresolved
+    # cross-wall pairs are eventually shown to be shared? Not a confidence
+    # interval and not permission to merge them now.
+    graph={n['node_id']:[] for n in nodes if n['wall']==0 and n['node_id'] not in used}
+    for edge in comparisons:
+        a,b=edge['node_a'],edge['node_b']
+        if a in used or b in used or edge['relation']=='no_shared_identity_evidence':continue
+        if lookup[a]['wall']==1:a,b=b,a
+        graph[a].append(b)
+    owner={}
+    def augment(a,seen):
+        for b in graph[a]:
+            if b in seen:continue
+            seen.add(b)
+            if b not in owner or augment(owner[b],seen):owner[b]=a;return True
+        return False
+    possible=sum(augment(a,set()) for a in graph)
+    return dict(activities=ledger,cross_wall_evidence=comparisons,
+        input_wall_proposal_rows=len(nodes),patient_candidate_rows=len(ledger),
+        cross_wall_pairs_merged=len(pairs),unresolved_cross_wall_rows=sum(bool(r['unresolved_related_nodes']) for r in ledger),
+        conditional_identity_count_range=[len(ledger)-possible,len(ledger)],
+        conditional_range_semantics='if recorded unresolved cross-wall matches are shared; not a statistical confidence interval',
+        formal_event_count=None,formal_event_frequency_cpm=None)
+
+
+def _interval_union(begin, end, supported):
+    intervals = []
+    for a, b in zip(begin[supported], end[supported]):
+        a = float(a); b = float(b)
+        if intervals and a <= intervals[-1][1] + 1e-9:
+            intervals[-1][1] = max(intervals[-1][1], b)
+        else:
+            intervals.append([a, b])
+    return intervals
+
+
+def _minimum_run_mask(raw_v, time_s, min_run_s):
+    """Mirror filtered_runs() continuous-support eligibility, without filtering A.
+
+    raw_v: time x wall x section boolean support.
+    A sample becomes detector-eligible only if it belongs to a continuous
+    per-(wall,section) run long enough for the current detector.
+    """
+    raw_v = np.asarray(raw_v, bool)
+    t = np.asarray(time_s, float)
+    if raw_v.ndim != 3 or raw_v.shape[0] != len(t):
+        raise ValueError('raw_v must be time x wall x section and match time_s')
+    if len(t) < 2 or not np.isfinite(t).all() or np.any(np.diff(t) <= 0):
+        raise ValueError('time_s must contain at least two finite increasing samples')
+    if min_run_s is None:
+        return raw_v.copy(), None
+    if not np.isfinite(min_run_s) or min_run_s <= 0:
+        raise ValueError('min_run_s must be positive or None')
+
+    minimum = max(3, int(np.ceil(float(min_run_s) / np.median(np.diff(t)))))
+    eligible = np.zeros_like(raw_v)
+    for wall in range(raw_v.shape[1]):
+        for section in range(raw_v.shape[2]):
+            runs = np.flatnonzero(
+                np.diff(np.r_[False, raw_v[:, wall, section], False])
+            ).reshape(-1, 2)
+            for first, last in runs:
+                if last - first >= minimum:
+                    eligible[first:last, wall, section] = True
+    return eligible, minimum
+
+
+def observation_union(maps, *, min_run_s=12.0):
+    """Detector-aligned observation-time denominator.
+
+    Frequency exposure is the union of measurement intervals for which at
+    least one wall has >=3 adjacent native sections that belong to a
+    continuous per-section run satisfying the detector's minimum support.
+
+    This is NOT a claim that 12 s is sufficient to estimate the whole
+    0.5--5 cpm band. It only mirrors the current detector's minimum
+    continuous-support rule so numerator and denominator use the same domain.
+    """
+    raw_v = np.asarray(maps['valid_mask'], bool) & np.isfinite(maps['A'])
+    begin = np.asarray(maps['interval_start_s'], float)
+    end = np.asarray(maps['interval_end_s'], float)
+    t = np.asarray(maps.get('interval_center_s', 0.5 * (begin + end)), float)
+    if (raw_v.ndim != 3 or raw_v.shape[1] != 2 or len(raw_v) != len(begin) or
+            end.shape != begin.shape or t.shape != begin.shape or
+            not np.isfinite(begin).all() or not np.isfinite(end).all() or
+            np.any(end <= begin)):
+        raise ValueError('Expected physical radial interval maps')
+
+    v, minimum = _minimum_run_mask(raw_v, t, min_run_s)
+
+    def spatially_observable(mask):
+        if mask.shape[2] < 3:
+            return np.zeros(len(mask), bool)
+        return (mask[:, :, :-2] & mask[:, :, 1:-1] & mask[:, :, 2:]).any((1, 2))
+
+    raw_supported = spatially_observable(raw_v)
+    supported = spatially_observable(v)
+    raw_intervals = _interval_union(begin, end, raw_supported)
+    intervals = _interval_union(begin, end, supported)
+    raw_seconds = float(sum(b-a for a, b in raw_intervals))
+    seconds = float(sum(b-a for a, b in intervals))
+
+    return dict(
+        seconds=seconds,
+        intervals_s=intervals,
+        raw_seconds=raw_seconds,
+        raw_observation_seconds=raw_seconds,
+        filtered_observation_seconds=seconds,
+        filtered_observation_fraction=(seconds/raw_seconds if raw_seconds > 0 else None),
+        raw_intervals_s=raw_intervals,
+        filtered_over_raw_observation_fraction=(seconds/raw_seconds if raw_seconds > 0 else None),
+        min_run_s=None if min_run_s is None else float(min_run_s),
+        minimum_run_samples=None if minimum is None else int(minimum),
+        rule=('union of measurement intervals with >=3 adjacent native sections in either wall, '
+              'after per-section continuous-run eligibility aligned to the event detector'),
+        coverage_scope='locally observable radial activity, not proof of full-cavity visibility',
+    )
+
+
+def aggregate_by_direction(nodes,span,dt,seconds):
+    """Direction first; tissue wall never becomes the reporting category.
+
+    Same direction is necessary, not sufficient, for shared identity. Local,
+    complex and unknown-direction proposals stay outside C2F/F2C frequency.
+    """
+    buckets={}
+    for label in ('C2F','F2C','other'):
+        selected=[n for n in nodes if n['direction']==label] if label!='other' else [n for n in nodes if n['direction'] not in ('C2F','F2C')]
+        result=aggregate_nodes(selected,span,dt)
+        for i,event in enumerate(result['activities'],1):event['patient_candidate_id']=f'{label}_{i:03d}'
+        low,high=result['conditional_identity_count_range']
+        result['candidate_rate_range_cpm']=[low*60/seconds,high*60/seconds] if seconds>0 else [None,None]
+        result['direction_bucket']=label
+        result['direction_source']='original arrival-order proposal, not radial strain sign or wall label'
+        buckets[label]=result
+    return buckets
+
+
+def _identity_first_buckets(reconciled,seconds):
+    """Adapt identity-first activities to the existing patient report interface."""
+    buckets={}
+    for label in ('C2F','F2C','other'):
+        activities=[deepcopy(activity) for activity in reconciled['activities']
+                    if (activity['direction']==label if label!='other'
+                        else activity['direction'] not in ('C2F','F2C'))]
+        for index,activity in enumerate(activities,1):
+            activity['patient_candidate_id']=f'{label}_{index:03d}'
+        count=len(activities);rate=count*60/seconds if seconds>0 else None
+        buckets[label]=dict(activities=activities,patient_candidate_rows=count,
+            conditional_identity_count_range=[count,count],
+            candidate_rate_range_cpm=[rate,rate],direction_bucket=label,
+            direction_source=('arrival refit on each contiguous salience-retained block; '
+                              'cross-wall identity reconciled before direction'),
+            formal_event_count=None,formal_event_frequency_cpm=None)
+    return buckets
+
+
+def patient_summary(salience,ownership,maps):
+    dt=float(np.median(np.diff(maps['interval_center_s'])));span=float(np.median(maps['interval_dt_s']))
+    nodes=candidate_nodes(salience,ownership)
+    exposure=observation_union(maps);seconds=exposure['seconds']
+    legacy=aggregate_nodes(nodes,span,dt)
+    reconciled=reconcile_identity_then_direction(nodes,np.asarray(maps['s'],float),span,dt)
+    activities=reconciled['activities'];count=len(activities)
+    directional=sum(a['direction'] in ('C2F','F2C') for a in activities)
+    unresolved_cross_wall=sum(bool(a['unresolved_related_nodes']) for a in activities)
+    result=dict(activities=activities,cross_wall_evidence=reconciled['identity_comparisons'],
+        input_wall_proposal_rows=len(nodes),patient_candidate_rows=count,
+        cross_wall_pairs_merged=reconciled['cross_wall_identity_pairs'],
+        unresolved_cross_wall_rows=unresolved_cross_wall,
+        conditional_identity_count_range=[count,count],
+        conditional_range_semantics='exact output of current identity-first algorithm; not a confidence interval',
+        formal_event_count=None,formal_event_frequency_cpm=None)
+    result.update(exposure=exposure,candidate_activity_rate_cpm=count*60/seconds if seconds>0 else None,
+        unresolved_ledger_row_density_cpm=count*60/seconds if seconds>0 else None,
+        conditional_candidate_rate_range_cpm=[count*60/seconds,count*60/seconds] if seconds>0 else [None,None],
+        directional_candidate_rows=directional,local_or_unresolved_rows=count-directional,
+        candidate_propagation_rate_cpm=directional*60/seconds if seconds>0 else None,
+        directional_candidate_counts={d:sum(a['direction']==d for a in activities) for d in ('C2F','F2C')},
+        rates_are_exploratory_candidate_densities=True,timing_tolerance_s=span+dt)
+    buckets=_identity_first_buckets(reconciled,seconds)
+    result.update(primary_reporting='identity_first_direction_second',directional_summaries={d:buckets[d] for d in ('C2F','F2C')},
+        non_directional_summary=buckets['other'],
+        directional_candidate_count_range=[sum(buckets[d]['conditional_identity_count_range'][i] for d in ('C2F','F2C')) for i in (0,1)],
+        combined_activity_fields_are_secondary_QC=True,
+        legacy_direction_first_QC=dict(patient_candidate_rows=legacy['patient_candidate_rows'],
+            conditional_identity_count_range=legacy['conditional_identity_count_range'],
+            cross_wall_pairs_merged=legacy['cross_wall_pairs_merged']),
+        retained_direction_refit=True,identity_before_direction=True)
+    return result
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/patient_activity_aggregation.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/record_mse_core.py | git_blob_sha=20d99c73fd1aed6768c6a00ee9ed4263c9be4a89 ================
+"""Frozen numeric-only ER-MSE core, copied verbatim from the historical implementation.
+
+No files, clinical fields, labels or association/model modules are imported.
+"""
+import numpy as np
+
+
+def _segments(rows):
+    """Split one spatial block into chronological runs without crossing gaps."""
+    rows = sorted(rows, key=lambda row: row["window_center_s"])
+    times = np.asarray([row["window_center_s"] for row in rows], float)
+    if len(times) == 1:
+        return [rows]
+    positive = np.diff(times)
+    positive = positive[positive > 0]
+    if not len(positive):
+        raise ValueError("Repeated paired-window timestamps")
+    step = float(np.median(positive))
+    cuts = np.flatnonzero(np.diff(times) > 1.5 * step) + 1
+    bounds = np.r_[0, cuts, len(rows)]
+    return [rows[int(left):int(right)] for left, right in zip(bounds[:-1], bounds[1:])]
+
+
+def _coordination(rows):
+    x = np.asarray([row["anterior_ER"] for row in rows], float)
+    y = np.asarray([row["posterior_ER"] for row in rows], float)
+    if not np.isfinite(x).all() or not np.isfinite(y).all():
+        raise ValueError("Paired ER values must be finite")
+    mse = float(np.mean((x - y) ** 2))
+    cc = (
+        float(np.corrcoef(x, y)[0, 1])
+        if len(rows) >= 3 and np.std(x) > 1e-12 and np.std(y) > 1e-12
+        else None
+    )
+    return mse, cc
+
+
+def _decompose(ant, post, observed_mse):
+    """Decompose observed ER-MSE into bias, scale and time-shape terms."""
+    ant = np.asarray(ant, float)
+    post = np.asarray(post, float)
+    mean_ant = float(ant.mean())
+    mean_post = float(post.mean())
+    sd_ant = float(ant.std(ddof=0))
+    sd_post = float(post.std(ddof=0))
+    mean_bias_sq = float((mean_ant - mean_post) ** 2)
+    scale_difference_sq = float((sd_ant - sd_post) ** 2)
+    if len(ant) >= 3 and sd_ant > 1e-12 and sd_post > 1e-12:
+        cc = float(np.corrcoef(ant, post)[0, 1])
+        shape_term = float(2 * sd_ant * sd_post * (1 - cc))
+        standardized_mse = float(
+            np.mean(
+                (
+                    (ant - mean_ant) / sd_ant
+                    - (post - mean_post) / sd_post
+                )
+                ** 2
+            )
+        )
+    else:
+        shape_term = float(observed_mse - mean_bias_sq - scale_difference_sq)
+        standardized_mse = None
+    return dict(
+        record_ER_mean_anterior=mean_ant,
+        record_ER_mean_posterior=mean_post,
+        record_ER_sd_anterior=sd_ant,
+        record_ER_sd_posterior=sd_post,
+        record_mean_bias_sq=mean_bias_sq,
+        record_sd_scale_sq=scale_difference_sq,
+        record_time_shape_term=shape_term,
+        record_MSE_z=standardized_mse,
+    )
+
+
+def summarize_paired_windows(paired):
+    """Return record-level coordination and all contributing temporal runs.
+
+    Primary MSE gives each unique window time equal weight, then each spatial
+    block at that time equal weight. ``pooled_MSE`` is a sensitivity metric in
+    which every window-block observation is equally weighted. No missing time
+    or unsupported spatial section is represented as zero.
+    """
+    if not paired:
+        return dict(
+            status="no_shared_supported_ER_windows",
+            record_MSE_time_equal=None,
+            record_MSE_pooled=None,
+            record_CC_time_equal=None,
+            record_ER_mean_anterior=None,
+            record_ER_mean_posterior=None,
+            record_ER_sd_anterior=None,
+            record_ER_sd_posterior=None,
+            record_mean_bias_sq=None,
+            record_sd_scale_sq=None,
+            record_time_shape_term=None,
+            record_MSE_z=None,
+            decomposition_status="unavailable_no_shared_support",
+            paired_window_count=0,
+            unique_window_count=0,
+            spatial_block_count=0,
+            temporal_segment_count=0,
+            segment_MSE_mean=None,
+            segment_MSE_median=None,
+            window_span_s=None,
+            segment_evidence=[],
+        )
+
+    by_block = {}
+    for row in paired:
+        key = (int(row["first_section"]), int(row["last_section"]))
+        by_block.setdefault(key, []).append(row)
+
+    segment_evidence = []
+    all_blocks = []
+    for (lo, hi), block_rows in sorted(by_block.items()):
+        all_blocks.append(block_rows)
+        for index, part in enumerate(_segments(block_rows), 1):
+            mse, cc = _coordination(part)
+            segment_evidence.append(
+                dict(
+                    first_section=lo,
+                    last_section=hi,
+                    segment_index=index,
+                    window_count=len(part),
+                    start_center_s=float(min(row["window_center_s"] for row in part)),
+                    end_center_s=float(max(row["window_center_s"] for row in part)),
+                    ER_MSE=mse,
+                    ER_CC=cc,
+                )
+            )
+
+    flat = [row for block in all_blocks for row in block]
+    pooled_mse = _coordination(flat)[0]
+
+    # One series per recording: average available spatial-block ER at each
+    # identical window time, then calculate the MSE and CC over time.
+    by_time = {}
+    for row in flat:
+        key = (float(row["window_start_s"]), float(row["window_end_s"]), float(row["window_center_s"]))
+        by_time.setdefault(key, []).append(row)
+    ordered_times = sorted(by_time)
+    ant = np.asarray([np.mean([row["anterior_ER"] for row in by_time[key]]) for key in ordered_times])
+    post = np.asarray([np.mean([row["posterior_ER"] for row in by_time[key]]) for key in ordered_times])
+    error_by_time = np.asarray(
+        [np.mean([(row["anterior_ER"] - row["posterior_ER"]) ** 2 for row in by_time[key]]) for key in ordered_times]
+    )
+    observed_mse = float(np.mean(error_by_time))
+    if max(len(rows) for rows in by_time.values()) == 1:
+        decomposition = _decompose(ant, post, observed_mse)
+        decomposition["decomposition_status"] = "one_block_per_window_time"
+    else:
+        decomposition = {
+            "record_ER_mean_anterior": None,
+            "record_ER_mean_posterior": None,
+            "record_ER_sd_anterior": None,
+            "record_ER_sd_posterior": None,
+            "record_mean_bias_sq": None,
+            "record_sd_scale_sq": None,
+            "record_time_shape_term": None,
+            "record_MSE_z": None,
+            "decomposition_status": "not_defined_for_multiple_blocks_per_time",
+        }
+    record_cc = (
+        float(np.corrcoef(ant, post)[0, 1])
+        if len(ordered_times) >= 3 and np.std(ant) > 1e-12 and np.std(post) > 1e-12
+        else None
+    )
+    centers = np.asarray([key[2] for key in ordered_times], float)
+    positive = np.diff(centers)
+    positive = positive[positive > 0]
+    step = float(np.median(positive)) if len(positive) else 0.0
+    gaps = np.diff(centers) > 1.5 * step if step else np.zeros(0, bool)
+    segment_array = np.asarray([row["ER_MSE"] for row in segment_evidence], float)
+    return dict(
+        status="available_on_shared_ER_support",
+        record_MSE_time_equal=observed_mse,
+        record_MSE_pooled=float(pooled_mse),
+        record_CC_time_equal=record_cc,
+        **decomposition,
+        paired_window_count=len(flat),
+        unique_window_count=len(ordered_times),
+        spatial_block_count=len(by_block),
+        temporal_segment_count=len(segment_evidence),
+        temporal_gap_count=int(gaps.sum()),
+        segment_MSE_mean=float(segment_array.mean()),
+        segment_MSE_median=float(np.median(segment_array)),
+        window_span_s=float(max(row["window_end_s"] for row in flat) - min(row["window_start_s"] for row in flat)),
+        first_section=min(key[0] for key in by_block),
+        last_section=max(key[1] for key in by_block),
+        segment_evidence=segment_evidence,
+    )
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/record_mse_core.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/__init__.py | git_blob_sha=3b909b0aa1bc24616253232574052b573347e51c ================
+"""Research measurements of uterine tissue deformation and wave patterns."""
+__version__ = "0.1.0"
+
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/__init__.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/_lk.py | git_blob_sha=8d0c6b2182b49ddcfbfa353a9084d7556916363d ================
+"""Existing CUDA LK and grayscale QC, without machine-specific imports."""
+import cv2
+import numpy as np
+
+_FLOWS = {}
+
+
+def local_contrast(gray, sigma=5.):
+    source = gray.astype(np.float32)
+    mean = cv2.GaussianBlur(source, (0, 0), sigma)
+    square = cv2.GaussianBlur(source*source, (0, 0), sigma)
+    std = np.sqrt(np.maximum(square-mean*mean, 0))
+    mapped = 128+35*(source-mean)/(std+5)
+    return np.uint8(np.where(gray > 12, np.clip(np.rint(mapped), 0, 255), 0))
+
+
+def patch(image, point, radius):
+    x, y = point
+    h, w = image.shape
+    if not np.isfinite(point).all() or min(x,y) < radius+1 or x >= w-radius-1 or y >= h-radius-1:
+        return None
+    return cv2.getRectSubPix(image, (2*radius+1, 2*radius+1), (float(x), float(y)))
+
+
+def flow(a, b, p, window, initial=None):
+    p = np.asarray(p, np.float32).reshape(1, -1, 2)
+    if initial is not None:
+        initial = np.asarray(initial, np.float32)
+        if initial.shape != p.reshape(-1, 2).shape or not np.isfinite(initial).all():
+            raise ValueError("Initial target must be finite Nx2")
+    key = (window, initial is not None)
+    if key not in _FLOWS:
+        if cv2.cuda.getCudaEnabledDeviceCount() < 1:
+            raise RuntimeError("CUDA OpenCV with cudaoptflow is required; no CPU fallback is used")
+        cv2.cuda.setDevice(0)
+        factory = getattr(cv2, 'cuda_SparsePyrLKOpticalFlow', None)
+        _FLOWS[key] = (factory.create((window, window), 3, 30, initial is not None)
+                      if factory is not None else
+                      cv2.cuda.SparsePyrLKOpticalFlow_create((window, window), 3, 30, initial is not None))
+    def upload(x):
+        gpu = cv2.cuda_GpuMat()
+        gpu.upload(np.ascontiguousarray(x))
+        return gpu
+    target = upload(initial.reshape(1, -1, 2)) if initial is not None else None
+    q, status, err = _FLOWS[key].calc(upload(a), upload(b), upload(p), target)
+    return q.download().reshape(-1, 1, 2), status.download().reshape(-1, 1), None
+
+
+def match(a,b,qa,qb,p,window,initial=None,*,max_fb_px=.75,qc_scale=1.,qc_window=None,return_diagnostics=False):
+    found,ok,_=flow(a,b,p,window,initial)
+    points=found[:,0];back,bok,_=flow(b,a,points,window,p if initial is not None else None)
+    fb=np.linalg.norm(back[:,0]-p,axis=1)
+    good=ok.ravel().astype(bool)&bok.ravel().astype(bool)&np.isfinite(points).all(1)&(fb<=max_fb_px)
+    # Pixel-center convention of spatial downsampling; localization stays native.
+    qp,qq=(p,points) if qc_scale==1 else ((p+.5)/qc_scale-.5,(points+.5)/qc_scale-.5)
+    radius=int(round((window//2)/qc_scale)) if qc_window is None else qc_window//2
+    score=np.full(len(p),-1.);reason=np.full(len(p),'fb_or_flow_rejected',dtype='U24')
+    for j in np.flatnonzero(good):
+        x,y=patch(qa,qp[j],radius),patch(qb,qq[j],radius)
+        if x is None or y is None:good[j]=False;reason[j]='patch_outside';continue
+        if min(x.std(),y.std())<2:good[j]=False;reason[j]='low_texture';continue
+        x=x.astype(float).ravel();y=y.astype(float).ravel();x-=x.mean();y-=y.mean();den=np.linalg.norm(x)*np.linalg.norm(y)
+        score[j]=float(x@y/den) if den>1e-10 else -1.
+        good[j]=score[j]>=.75;reason[j]='accepted' if good[j] else 'ncc_rejected'
+    result = (points,good,score,fb,reason)
+    if return_diagnostics:
+        return (*result, dict(forward_status=ok.ravel().astype(bool),
+                              backward_status=bok.ravel().astype(bool)))
+    return result
+
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/_lk.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/amplitude.py | git_blob_sha=458e7da3f63af67a0eaba34d18402f72adb764fc ================
+"""Amplitude-related summaries for complete radial-strain time blocks."""
+import numpy as np
+
+
+def band_limited_signal(values, time_s, band_cpm=(.5, 5.)):
+    """Return a zero-phase FFT band pass of one complete time block.
+
+    ``values`` may have any trailing spatial dimensions.  The result has those
+    trailing dimensions.  This is an interval-strain variability measure, not
+    a single-event peak amplitude.  Missing samples are not filled.
+    """
+    values = np.asarray(values, float)
+    time_s = np.asarray(time_s, float)
+    if values.ndim < 1 or values.shape[0] != len(time_s) or len(time_s) < 3:
+        raise ValueError('Expected time-first values with at least three samples')
+    if not np.isfinite(values).all() or not np.isfinite(time_s).all():
+        raise ValueError('Band-limited SD requires a complete finite block')
+    dt = np.diff(time_s)
+    if np.any(dt <= 0) or not np.allclose(dt, np.median(dt), rtol=1e-5, atol=1e-9):
+        raise ValueError('FFT amplitude requires uniform real timestamps')
+    if not 0 < band_cpm[0] < band_cpm[1]:
+        raise ValueError('Invalid temporal frequency band')
+    centered = values - values.mean(axis=0, keepdims=True)
+    spectrum = np.fft.rfft(centered, axis=0)
+    frequencies = np.fft.rfftfreq(len(time_s), np.median(dt))
+    keep = (frequencies >= band_cpm[0]/60) & (frequencies <= band_cpm[1]/60)
+    spectrum[~keep] = 0
+    return np.fft.irfft(spectrum, n=len(time_s), axis=0)
+
+
+def band_limited_sd(values, time_s, band_cpm=(.5, 5.)):
+    """Return per-column SD after band limiting a complete time block."""
+    return np.std(band_limited_signal(values, time_s, band_cpm), axis=0)
+
+
+def summarize_interval_strain(values, time_s, band_cpm=(.5, 5.)):
+    """Raw and physiological-band SD for one complete interval-strain block."""
+    values = np.asarray(values, float)
+    band_sd = band_limited_sd(values, time_s, band_cpm)
+    raw_sd = np.std(values, axis=0)
+    resolution = 60/(len(time_s)*np.median(np.diff(np.asarray(time_s, float))))
+    bins = np.fft.rfftfreq(len(time_s), np.median(np.diff(time_s)))
+    positive_bins = int(((bins >= band_cpm[0]/60) & (bins <= band_cpm[1]/60)).sum())
+    return dict(
+        definition='band_limited_interval_radial_strain_SD',
+        interpretation='radial_stretch_activity_amplitude',
+        units='dimensionless',
+        depends_on_measurement_interval_and_motion_rate=True,
+        raw_SD_per_pair=raw_sd,
+        raw_SD_mean=float(raw_sd.mean()),
+        band_SD_per_pair=band_sd,
+        band_SD_mean=float(band_sd.mean()),
+        band_cpm=list(band_cpm),
+        time_resolution_cpm=float(resolution),
+        positive_frequency_bins=positive_bins,
+        duration_s=float(time_s[-1]-time_s[0]),
+    )
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/amplitude.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/deformation.py | git_blob_sha=15ebcbd140a72dc36a0205116220b54bf874e7af ================
+"""Signed interval deformation with explicit topology and continuity masks."""
+import numpy as np
+
+DEFAULT_PROPAGATION_INTERVAL_S = 2.0
+SENSITIVITY_INTERVAL_S = .96
+
+
+def validate_time(time_s, count, hop):
+    t = np.asarray(time_s, float)
+    if t.shape != (count,) or not np.isfinite(t).all() or np.any(np.diff(t) <= 0):
+        raise ValueError("Expected finite, strictly increasing acquisition times")
+    if not isinstance(hop, (int, np.integer)) or not 1 <= hop < count:
+        raise ValueError("hop must be an integer between 1 and frame_count-1")
+    return t
+
+
+def interval_support(tracks, hop):
+    """No invalid step, segment change or correction-epoch change may be crossed."""
+    valid = np.asarray(tracks['target_valid'], bool).copy()
+    if valid.ndim != 2:
+        raise ValueError("target_valid must be time x point")
+    validate_time(tracks['time_s'], len(valid), hop)
+    if 'pose_valid' in tracks:
+        pose_valid = np.asarray(tracks['pose_valid'], bool)
+        if pose_valid.shape != (len(valid),):
+            raise ValueError('pose_valid must have one entry per frame')
+        valid &= pose_valid[:, None]
+    step = np.asarray(tracks['step_valid'], bool).copy()
+    segment = np.asarray(tracks['segment_id'])
+    if step.shape != valid.shape or segment.shape != valid.shape:
+        raise ValueError("Track validity and segment arrays must share a shape")
+    epoch = np.asarray(tracks.get('pose_epoch', np.zeros(len(valid), int)))
+    if epoch.shape != (len(valid),):
+        raise ValueError("pose_epoch must have one entry per frame")
+    step[1:] &= valid[1:] & valid[:-1]
+    step[1:] &= segment[1:] == segment[:-1]
+    step[1:] &= (epoch[1:] == epoch[:-1])[:, None]
+    failures = np.vstack((np.zeros((1, valid.shape[1]), int), np.cumsum(~step[1:], axis=0)))
+    return valid[hop:] & valid[:-hop] & (failures[hop:] - failures[:-hop] == 0)
+
+
+def rate_A(points, grid, time_s, hop=8):
+    """(L(t)-L(t-hop))/L(t-hop)/dt, positive for radial lengthening; s^-1."""
+    points = np.asarray(points, float)
+    t = validate_time(time_s, len(points), hop)
+    p = points[:, grid['A_pair_ids']]
+    lengths = np.linalg.norm(p[:, :, :, 1] - p[:, :, :, 0], axis=-1)
+    result = np.full_like(lengths[hop:], np.nan)
+    denominator = lengths[:-hop] * (t[hop:] - t[:-hop])[:, None, None]
+    np.divide(lengths[hop:] - lengths[:-hop], denominator, out=result, where=denominator > 0)
+    return result
+
+
+def curvature(points, arc):
+    """Signed curvature of a local 5-seed quadratic in initial arc coordinates."""
+    points = np.asarray(points, float)
+    arc = np.asarray(arc, float)
+    if points.ndim != 3 or points.shape[2] != 2 or points.shape[1] != len(arc):
+        raise ValueError("Expected time x spatial_point x xy and matching arc")
+    if len(arc) < 5 or not np.isfinite(arc).all() or np.any(np.diff(arc) <= 0):
+        raise ValueError("Curvature needs five distinct ordered spatial samples")
+    out = np.full((len(points), len(arc) - 4), np.nan)
+    for j in range(2, len(arc) - 2):
+        s = arc[j-2:j+3] - arc[j]
+        inverse = np.linalg.pinv(np.column_stack((np.ones(5), s, s*s)))
+        coef = np.einsum('ij,tjk->tik', inverse, points[:, j-2:j+3])
+        v, a = coef[:, 1], 2*coef[:, 2]
+        denominator = np.linalg.norm(v, axis=1)**3
+        numerator = v[:, 0]*a[:, 1] - v[:, 1]*a[:, 0]
+        np.divide(numerator, denominator, out=out[:, j-2], where=denominator > 1e-20)
+    return out
+
+
+def rate_B(points, grid, time_s, hop=8):
+    """Curvature change per second; (processed pixel * second)^-1."""
+    t = validate_time(time_s, len(points), hop)
+    values = []
+    arcs = []
+    for ids, arc in zip(grid['B_curve_ids'], grid['B_arc_positions']):
+        kappa = curvature(np.asarray(points)[:, ids], arc)
+        values.append((kappa[hop:] - kappa[:-hop]) / (t[hop:] - t[:-hop])[:, None])
+        arcs.append(arc[2:-2])
+    return np.stack(values, axis=1), np.asarray(arcs)
+
+
+def compute_maps(tracks, grid, hop=8):
+    """A IDs address A seeds, B IDs address B seeds; tracking order is [A, B]."""
+    points = np.asarray(tracks['corrected'], float)
+    count_a, count_b = len(grid['A_points']), len(grid['B_points'])
+    if points.shape != (len(tracks['time_s']), count_a + count_b, 2):
+        raise ValueError("Expected corrected trajectories in explicit [A_points, B_points] order")
+    effective = dict(tracks)
+    effective['target_valid'] = np.asarray(tracks['target_valid'], bool) & np.isfinite(points).all(2)
+    support = interval_support(effective, hop)
+    if support.shape[1] != count_a + count_b:
+        raise ValueError("Validity shape differs from trajectory shape")
+    support &= np.isfinite(points[hop:]).all(2) & np.isfinite(points[:-hop]).all(2)
+    a = rate_A(points[:, :count_a], grid, tracks['time_s'], hop)
+    good_a = support[:, :count_a][:, grid['A_pair_ids']].all(3) & np.isfinite(a)
+    b, arcs = rate_B(points[:, count_a:], grid, tracks['time_s'], hop)
+    good_b = np.stack([
+        np.stack([support[:, count_a:][:, ids[j-2:j+3]].all(1)
+                  for j in range(2, len(ids)-2)], axis=1)
+        for ids in grid['B_curve_ids']
+    ], axis=1) & np.isfinite(b)
+    return dict(A=np.where(good_a, a, np.nan), B=np.where(good_b, b, np.nan),
+                A_valid=good_a, B_valid=good_b, time_s=np.asarray(tracks['time_s'])[hop:],
+                A_arc_positions=grid['arc_positions'], B_arc_positions=arcs)
+
+
+def compute_spacetime(tracks, grid, *, interval_s=DEFAULT_PROPAGATION_INTERVAL_S):
+    """A0 trajectories with a ~2 s primary propagation measurement interval.
+
+    Choose a native-frame hop near the requested physical interval; retain its
+    actual per-sample duration. Legacy compute_maps time_s stays right-ended.
+    s remains the full annotated wall's normalized arc, without stretching a
+    retained/valid subregion back to 0..1. No interpolation or smoothing.
+    Explicit interval_s=.96 retains the higher-resolution sensitivity scale.
+    """
+    if not np.isfinite(interval_s) or interval_s <= 0:
+        raise ValueError('interval_s must be finite and positive')
+    t = validate_time(tracks['time_s'], len(tracks['corrected']), 1)
+    hop = max(1, int(np.floor(interval_s/np.median(np.diff(t))+.5)))
+    maps = compute_maps(tracks, grid, hop)
+    s = np.asarray(grid['u'], float)
+    if s.shape != (maps['A'].shape[2],) or not np.isfinite(s).all() or np.any(np.diff(s) <= 0) or np.any((s < 0) | (s > 1)):
+        raise ValueError('Expected ordered normalized full-wall spatial coordinates')
+    duration = t[hop:]-t[:-hop]
+    return dict(A=maps['A'], epsilon=maps['A']*duration[:, None, None],
+                valid_mask=maps['A_valid'], s=s.copy(),
+                interval_start_s=t[:-hop].copy(), interval_end_s=t[hop:].copy(),
+                interval_center_s=(t[:-hop]+t[hop:])/2, interval_dt_s=duration,
+                hop=hop, nominal_interval_s=float(interval_s),
+                A_arc_positions=maps['A_arc_positions'])
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/deformation.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/events.py | git_blob_sha=9bd0b170b58104b006fd16c53ee1112935a955ab ================
+"""Measure reviewed propagation events on the existing radial maps.
+
+Arrival annotations describe the same contraction/relaxation structure across
+positions. They are not detected from individual colour bands or ER windows.
+One event_id identifies one activity across walls; a reflection is a new event.
+"""
+import numpy as np
+
+
+def measure_event(spacetime, event):
+    """Fit arrival time = intercept + slope*s; speed = 1/slope.
+
+    Required: event_id, wall (0/1), start_s, end_s, sections (zero based),
+    arrival_time_s, reviewed. Three distinct adjacent sections are a numerical
+    fitting requirement, not a published physiological minimum wave extent.
+    Non-monotone arrival sequences remain complex, with no single speed.
+    """
+    t = np.asarray(spacetime['interval_center_s'], float)
+    s = np.asarray(spacetime['s'], float)
+    wall = event['wall']
+    ids = np.asarray(event['sections'])
+    arrival = np.asarray(event['arrival_time_s'], float)
+    start, end = float(event['start_s']), float(event['end_s'])
+    if (wall not in (0, 1) or ids.ndim != 1 or len(ids) < 3 or
+            not np.issubdtype(ids.dtype, np.integer) or
+            np.any(np.diff(ids) != 1) or ids[0] < 0 or ids[-1] >= len(s)):
+        raise ValueError('Event needs wall 0/1 and at least three adjacent section indices')
+    if (not event['event_id'] or arrival.shape != ids.shape or not np.isfinite(arrival).all()
+            or not np.isfinite([start, end]).all() or not start < end
+            or np.any(arrival < start) or np.any(arrival > end)):
+        raise ValueError('Event arrivals must be finite and inside its time bounds')
+    row = dict(event_id=str(event['event_id']), wall=int(wall),
+               start_s=start, end_s=end, sections=ids.tolist(),
+               s_start=float(s[ids[0]]), s_end=float(s[ids[-1]]),
+               spatial_span=float(s[ids[-1]]-s[ids[0]]),
+               arrival_time_s=arrival.tolist(), reviewed=bool(event['reviewed']),
+               arrival_time_slope=None, velocity_paths_per_s=None,
+               event_interval_strain_SD=None, direction=None)
+    if not row['reviewed']:
+        return dict(row, status='needs_review')
+    select = (t >= start) & (t <= end)
+    valid = np.asarray(spacetime['valid_mask'], bool)
+    a = np.asarray(spacetime['A'], float)
+    eps = np.asarray(spacetime['epsilon'], float)
+    if (start < t[0] or end > t[-1] or select.sum() < 3 or
+            not valid[select, wall][:, ids].all() or
+            not np.isfinite(a[select, wall][:, ids]).all() or
+            not np.isfinite(eps[select, wall][:, ids]).all()):
+        return dict(row, status='unsupported_time_or_segment_gap')
+    # Keep the original finite-interval meaning. A short-event SD is unfiltered:
+    # narrow event windows cannot represent the full physiological frequency band.
+    row['event_interval_strain_SD'] = float(np.std(eps[select, wall][:, ids], axis=0).mean())
+    if row['event_interval_strain_SD'] <= 1e-12:
+        return dict(row, direction='local_or_synchronous', status='no_resolved_propagation')
+    slope, intercept = np.polyfit(s[ids], arrival, 1)
+    residual = arrival-(intercept+slope*s[ids])
+    total = float(np.sum((arrival-arrival.mean())**2))
+    row.update(arrival_time_slope=float(slope),
+               arrival_fit_R2=float(1-np.sum(residual**2)/total) if total > 1e-20 else None,
+               arrival_fit_RMSE_s=float(np.sqrt(np.mean(residual**2))),
+               arrival_time_intercept=float(intercept), amplitude_units='dimensionless',
+               amplitude_definition='mean_per_pair_unfiltered_event_interval_strain_SD')
+    tolerance = float(np.median(np.diff(t)))
+    delta = np.diff(arrival)
+    if np.ptp(arrival) <= tolerance:
+        return dict(row, direction='local_or_synchronous', status='no_resolved_propagation')
+    monotone = np.all(delta >= -tolerance) or np.all(delta <= tolerance)
+    if not monotone:
+        return dict(row, direction='complex', status='reviewed_complex_activity')
+    if abs(slope)*(s[ids[-1]]-s[ids[0]]) <= tolerance:
+        return dict(row, direction='local_or_synchronous', status='no_resolved_propagation')
+    return dict(row, direction='C2F' if slope > 0 else 'F2C',
+                velocity_paths_per_s=float(1/slope), status='reviewed_propagation')
+
+
+def pair_wall_events(events, space):
+    """Pair only explicitly reviewed shared event IDs; never sum both walls."""
+    pairs = []
+    for event_id in sorted({row['event_id'] for row in events}):
+        rows = [row for row in events if row['event_id'] == event_id and
+                row['status'] in ('reviewed_propagation', 'reviewed_complex_activity')]
+        if len(rows) != 2 or {row['wall'] for row in rows} != {0, 1}:
+            continue
+        anterior, posterior = sorted(rows, key=lambda row: row['wall'])
+        common = sorted(set(anterior['sections']) & set(posterior['sections']))
+        if not common:
+            continue
+        # Only shared sampled positions; no spatial interpolation.
+        ta = dict(zip(anterior['sections'], anterior['arrival_time_s']))
+        tp = dict(zip(posterior['sections'], posterior['arrival_time_s']))
+        lag = [tp[j]-ta[j] for j in common]
+        pairs.append(dict(event_id=event_id, sections=common,
+                          s=np.asarray(space)[common].tolist(),
+                          directions_agree=anterior['direction'] == posterior['direction'],
+                          posterior_minus_anterior_arrival_s=lag,
+                          mean_arrival_difference_s=float(np.mean(lag))))
+    return pairs
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/events.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/geometry.py | git_blob_sha=6cc63a645a0a81f4c1d4b77d7134b8c8bbfcae00 ================
+"""Anatomically ordered seeds in processed-image xy coordinates."""
+import json
+from pathlib import Path
+import numpy as np
+
+CONFIG = dict(window_px=21, spacing_px=10.5, radial_baseline_px=21.,
+              endpoint_margin_px=21., band_fractions=[.25, .5, .75],
+              coordinate_scale=.5)
+
+
+def read_labelme(path, *, coordinate_scale=.5):
+    """Read only first-frame geometry; imageData and other labels are ignored."""
+    if not np.isfinite(coordinate_scale) or coordinate_scale <= 0:
+        raise ValueError("coordinate_scale must be positive")
+    document = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    names = ("ant_wall", "post_wall", "cervix_point", "fundus_point")
+    shapes = {}
+    for name in names:
+        entries = [s for s in document["shapes"] if s["label"] == name]
+        if len(entries) != 1:
+            raise ValueError(f"Expected one {name} annotation")
+        shapes[name] = np.asarray(entries[0]["points"], float) * coordinate_scale
+    validate_shapes(shapes)
+    return shapes
+
+
+def validate_shapes(shapes):
+    for name in ("ant_wall", "post_wall", "cervix_point", "fundus_point"):
+        p = np.asarray(shapes[name], float)
+        required = 2 if name.endswith("wall") else 1
+        if p.ndim != 2 or p.shape[1] != 2 or len(p) < required or not np.isfinite(p).all():
+            raise ValueError(f"Invalid {name} geometry")
+        if not name.endswith("wall") and len(p) != 1:
+            raise ValueError(f"{name} must contain one point")
+    if np.linalg.norm(shapes["cervix_point"][0] - shapes["fundus_point"][0]) < 1e-8:
+        raise ValueError("Cervix and fundus must be distinct")
+
+
+def orient(rail,cervix,fundus):
+ rail=np.asarray(rail,float)
+ if rail.ndim!=2 or rail.shape[1]!=2 or len(rail)<2:raise ValueError('Expected 2D wall polyline')
+ if np.linalg.norm(rail[0]-cervix)+np.linalg.norm(rail[-1]-fundus)>np.linalg.norm(rail[-1]-cervix)+np.linalg.norm(rail[0]-fundus):rail=rail[::-1]
+ if np.any(np.linalg.norm(np.diff(rail,axis=0),axis=1)<=1e-8):raise ValueError('Repeated wall vertices')
+ return rail
+def sample(rail,u):
+ distances=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(rail,axis=0),axis=1))]
+ s=u*distances[-1]
+ return np.column_stack([np.interp(s,distances,rail[:,dim]) for dim in range(2)]),distances[-1]
+def layout(shapes,config=CONFIG):
+ validate_shapes(shapes)
+ if min(config['spacing_px'],config['radial_baseline_px'])<=0 or config['endpoint_margin_px']<0:raise ValueError('Invalid sampling lengths')
+ if not config['band_fractions'] or any(not 0<f<1 for f in config['band_fractions']):raise ValueError('Band fractions must lie inside (0,1)')
+ cervix=shapes['cervix_point'][0];fundus=shapes['fundus_point'][0]
+ ra=orient(shapes['ant_wall'],cervix,fundus);rp=orient(shapes['post_wall'],cervix,fundus)
+ lengths=[float(np.linalg.norm(np.diff(r,axis=0),axis=1).sum()) for r in [ra,rp]]
+ trim=config['endpoint_margin_px']/min(lengths)
+ if trim>=.5:raise ValueError('Annotated path shorter than the proposed endpoint margins')
+ count=int(np.ceil(max(lengths)*(1-2*trim)/config['spacing_px']))+1
+ u=np.linspace(trim,1-trim,count)
+ aa,la=sample(ra,u);pp,lp=sample(rp,u)
+ rails=np.stack((aa,pp));center=(aa+pp)/2
+ normals=[];radial=[];normal_tangent_error=[]
+ for wi,boundary in enumerate((aa,pp)):
+  tangent=np.gradient(boundary,axis=0)
+  tangent/=np.linalg.norm(tangent,axis=1)[:,None]
+  normal=np.column_stack((-tangent[:,1],tangent[:,0]))
+  # Orient the normal away from the annotated endometrial cavity.
+  normal*=np.where(np.einsum('ij,ij->i',normal,boundary-center)>=0,1.,-1.)[:,None]
+  outer=boundary+config['radial_baseline_px']*normal
+  radial.append(np.stack((boundary,outer),axis=1));normals.append(normal)
+  normal_tangent_error.append(float(np.max(np.abs(np.einsum('ij,ij->i',normal,tangent)))))
+ band=np.stack([(1-frac)*aa+frac*pp for frac in config['band_fractions']])
+ # All IDs are stable; pair topology is explicit instead of relying on adjacency.
+ a_points=np.concatenate([pairs.reshape(-1,2) for pairs in radial])
+ a_pairs=np.arange(len(a_points)).reshape(2,count,2)
+ b_points=band.reshape(-1,2);b_curves=np.arange(len(b_points)).reshape(len(config['band_fractions']),count)
+ arc=[u*la,u*lp]
+ # Geometry is resampled only at initialization; measured trajectories are not interpolated.
+ return dict(u=u,radial=np.array(radial),normals=np.array(normals),band=band,wall=rails,
+  A_points=a_points,A_pair_ids=a_pairs,B_points=b_points,B_curve_ids=b_curves,
+  arc_positions=np.array(arc),B_arc_positions=np.array([np.r_[0.,np.cumsum(np.linalg.norm(np.diff(curve,axis=0),axis=1))] for curve in band]),wall_lengths=lengths,tangent_normal_error=max(normal_tangent_error))
+
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/geometry.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/io.py | git_blob_sha=48ab492f0e947af0b104b2f08aab6a9288ce317e ================
+"""Local video decoding. Retain all decoded frames and source presentation times."""
+from pathlib import Path
+import numpy as np
+
+
+def read_video(path, *, time_factor, coordinate_scale=.5):
+    """time_factor=3 for a verified 3x speed-up; factor is never inferred from a name."""
+    import cv2
+    if time_factor <= 0 or not np.isfinite(time_factor) or not 0 < coordinate_scale <= 1:
+        raise ValueError("Invalid time factor or coordinate scale")
+    capture = cv2.VideoCapture(str(Path(path)))
+    if not capture.isOpened():
+        raise ValueError("Cannot open video")
+    frames, times = [], []
+    try:
+        while True:
+            ok, image = capture.read()
+            if not ok:
+                break
+            times.append(capture.get(cv2.CAP_PROP_POS_MSEC)/1000*time_factor)
+            if coordinate_scale != 1:
+                image = cv2.resize(image, None, fx=coordinate_scale, fy=coordinate_scale,
+                                   interpolation=cv2.INTER_AREA)
+            frames.append(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY))
+    finally:
+        capture.release()
+    t = np.asarray(times, float)
+    if len(t) < 2 or not np.isfinite(t).all() or np.any(np.diff(t) <= 0):
+        raise ValueError("Decoder did not provide increasing timestamps; supply explicit acquisition times via the Python API")
+    return frames, t-t[0]
+
+
+def jsonable(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {k: jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(v) for v in value]
+    return value
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/io.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/modes.py | git_blob_sha=f325b7ec20ba0486bf2b65ebe5d57bc64a5f77c9 ================
+"""Segment-supported propagation mode features, separate from event detection."""
+import numpy as np
+from .spectrum import direction, mode_velocity
+from .amplitude import summarize_interval_strain
+
+
+def contiguous_blocks(mask, minimum=3):
+    edges = np.flatnonzero(np.diff(np.r_[False, mask, False])).reshape(-1, 2)
+    return [(int(a), int(b)) for a, b in edges if b-a >= minimum]
+
+
+def analyze_modes(spacetime, *, window_s=20., step_s=1., regions=None, refine_velocity=False,
+                  include_velocity=True):
+    """Each spectrum uses an intact rectangular block; no concatenated gaps.
+
+    20 s follows the prior literature-inspired mode protocol; 1 s step and
+    three-column numerical minimum are project settings, not event criteria.
+    All supported spatial blocks are kept. Coordination compares identical
+    sections and window times on the two walls, grouped by spatial block.
+    """
+    if refine_velocity and not include_velocity:
+        raise ValueError('Velocity refinement requires include_velocity=True')
+    def measure(values, clock, positions):
+        return (mode_velocity(values,clock,positions,refine=refine_velocity) if include_velocity
+                else direction(values,clock,positions))
+    a=np.asarray(spacetime['A'],float);v=np.asarray(spacetime['valid_mask'],bool)
+    epsilon=np.asarray(spacetime['epsilon'],float) if 'epsilon' in spacetime else None
+    t=np.asarray(spacetime['interval_center_s'],float);s=np.asarray(spacetime['s'],float)
+    if a.shape != v.shape or a.shape != (len(t),2,len(s)) or len(t)<3:
+        raise ValueError('Expected matching time x 2 walls x spatial section maps')
+    if epsilon is not None and epsilon.shape != a.shape:
+        raise ValueError('epsilon must match the time x wall x section map')
+    dt=np.diff(t)
+    if np.any(dt<=0) or not np.allclose(dt,np.median(dt),rtol=1e-5,atol=1e-9):
+        raise ValueError('Mode FFT requires native uniform timestamps, without filling')
+    if window_s<=0 or step_s<=0:raise ValueError('Positive window and step required')
+    n=max(3,int(round(window_s/np.median(dt))));step=max(1,int(round(step_s/np.median(dt))))
+    support=v&np.isfinite(a);rows=[];paired=[];missing=[]
+    requested=regions or [(0,0,len(s),'anterior'),(1,0,len(s),'posterior')]
+    requested_mask=np.zeros((2,len(s)),bool)
+    for wall,begin,end,name in requested:
+        if not 0<=wall<2 or not 0<=begin<end<=len(s):raise ValueError('Invalid spatial region')
+        requested_mask[wall,begin:end]=True
+    support &= requested_mask[None]
+    for first in range(0,len(t)-n+1,step):
+        last=first+n;complete=support[first:last].all(0)
+        window_results={}
+        def base(lo,hi):
+            return dict(window_start_s=float(t[first]),window_end_s=float(t[last-1]),
+                window_center_s=float((t[first]+t[last-1])/2),first_section=lo+1,last_section=hi,
+                s_start=float(s[lo]),s_end=float(s[hi-1]),center_span=float(s[hi-1]-s[lo]))
+        for wall,begin,end,name in requested:
+            if not 0<=wall<2 or not 0<=begin<end<=len(s):raise ValueError('Invalid spatial region')
+            blocks=contiguous_blocks(complete[wall,begin:end])
+            if not blocks:missing.append(dict(region=name,window_start_s=float(t[first]),reason='no_contiguous_three_column_support'))
+            for lo,hi in blocks:
+                lo+=begin;hi+=begin
+                result=measure(a[first:last,wall,lo:hi],t[first:last],s[lo:hi])
+                if epsilon is not None:
+                    amplitude=summarize_interval_strain(epsilon[first:last,wall,lo:hi],t[first:last])
+                    result.update(interval_strain_raw_SD_mean=float(amplitude['raw_SD_mean']),
+                        interval_strain_band_SD_mean=float(amplitude['band_SD_mean']),
+                        amplitude_band_cpm=amplitude['band_cpm'],
+                        amplitude_positive_frequency_bins=amplitude['positive_frequency_bins'])
+                window_results[wall,lo,hi]=result
+                rows.append(dict(**base(lo,hi),wall=wall,region=name,**result))
+        # Compare the same original spatial block, not two unrelated local ROIs.
+        for lo,hi in contiguous_blocks(complete.all(0)):
+            pair_results=[]
+            for wall in (0,1):
+                key=(wall,lo,hi)
+                if key not in window_results:
+                    window_results[key]=measure(a[first:last,wall,lo:hi],t[first:last],s[lo:hi])
+                pair_results.append(window_results[key])
+            left,right=pair_results
+            if left['ER'] is not None and right['ER'] is not None:
+                paired.append(dict(**base(lo,hi),anterior_ER=left['ER'],posterior_ER=right['ER']))
+    coordination=[]
+    groups=sorted(set((r['first_section'],r['last_section']) for r in paired))
+    for lo,hi in groups:
+        group=[r for r in paired if (r['first_section'],r['last_section'])==(lo,hi)]
+        # Split temporal gaps too; do not align separated fragments by row index.
+        times=np.array([r['window_center_s'] for r in group]);boundaries=np.r_[0,np.flatnonzero(np.diff(times)>step*np.median(dt)*1.5)+1,len(group)]
+        for begin,end in zip(boundaries[:-1],boundaries[1:]):
+            part=group[begin:end];x=np.array([r['anterior_ER'] for r in part]);y=np.array([r['posterior_ER'] for r in part])
+            cc=float(np.corrcoef(x,y)[0,1]) if len(x)>=3 and np.std(x)>1e-12 and np.std(y)>1e-12 else None
+            coordination.append(dict(first_section=lo,last_section=hi,window_count=len(part),
+                start_center_s=part[0]['window_center_s'],end_center_s=part[-1]['window_center_s'],
+                zero_lag_ER_Pearson_CC=cc,ER_MSE=float(np.mean((x-y)**2)),
+                status='mode_similarity_candidate',overlapping_windows=True))
+    return dict(windows=rows,paired_ER_windows=paired,coordination=coordination,missing=missing,
+        nominal_window_s=float(window_s),nominal_step_s=float(step_s),
+        actual_window_sample_span_s=float((n-1)*np.median(dt)),
+        actual_step_s=float(step*np.median(dt)),
+        numerical_minimum_columns=3,refined_velocity=bool(refine_velocity),event_count=None,event_frequency_cpm=None)
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/modes.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/patient.py | git_blob_sha=aa9103e93c7fdb24235d4725474c59f05d87fc08 ================
+"""Fixed-region patient summaries, with explicit observation support."""
+import numpy as np
+from .amplitude import summarize_interval_strain
+from .events import measure_event, pair_wall_events
+from .modes import analyze_modes, contiguous_blocks
+
+
+def _duration(mask, interval_start_s, interval_end_s):
+    """Length of the selected measurement-interval union, in seconds.
+
+    Endpoints are validated by summarize_patient. Only overlapping/touching
+    intervals merge; positive gaps between supported intervals stay missing.
+    """
+    intervals = sorted(zip(interval_start_s[mask], interval_end_s[mask]))
+    if not intervals:
+        return 0.
+    start, end = intervals[0]
+    total = 0.
+    for left, right in intervals[1:]:
+        if left <= end:
+            end = max(end, right)
+        else:
+            total += end-start
+            start, end = left, right
+    return float(total+end-start)
+
+
+def summarize_patient(spacetime, *, s_range, time_range=None, review=None, refine_mode_speed=False,
+                      include_mode_velocity=True):
+    """Same preselected anatomical region for amplitude, modes and exposure.
+
+    review=None means no event review, not zero waves. A review contains
+    complete (bool), intervals [[start,end], ...], and events (see events.py).
+    Frequency is emitted only for an exhaustive review of supported exposure.
+    Separate fragments are never concatenated before filtering or FFT.
+    """
+    t = np.asarray(spacetime['interval_center_s'], float)
+    s = np.asarray(spacetime['s'], float)
+    a = np.asarray(spacetime['A'], float)
+    eps = np.asarray(spacetime['epsilon'], float)
+    valid = np.asarray(spacetime['valid_mask'], bool)
+    if (t.ndim != 1 or len(t) < 3 or not np.isfinite(t).all() or
+            np.any(np.diff(t) <= 0) or not np.allclose(np.diff(t), np.median(np.diff(t)), rtol=1e-5)):
+        raise ValueError('Patient summary requires increasing uniform native times')
+    if (s.ndim != 1 or not np.isfinite(s).all() or np.any(np.diff(s) <= 0) or
+            a.shape != (len(t), 2, len(s)) or eps.shape != a.shape or valid.shape != a.shape):
+        raise ValueError('Expected matching time x wall x section maps')
+    dt = np.asarray(spacetime['interval_dt_s'], float)
+    if dt.shape != t.shape or not np.isfinite(dt).all() or np.any(dt <= 0):
+        raise ValueError('interval_dt_s must contain one finite positive duration per sample')
+    if ('interval_start_s' in spacetime) != ('interval_end_s' in spacetime):
+        raise ValueError('Supply both interval_start_s and interval_end_s')
+    # Interval center and duration determine the exact endpoints for older
+    # maps that archived only these two fields. No motion is interpolated.
+    interval_start = np.asarray(spacetime.get('interval_start_s', t-dt/2), float)
+    interval_end = np.asarray(spacetime.get('interval_end_s', t+dt/2), float)
+    if (interval_start.shape != t.shape or interval_end.shape != t.shape or
+            not np.isfinite(interval_start).all() or not np.isfinite(interval_end).all() or
+            not np.allclose(interval_end-interval_start, dt, rtol=1e-5, atol=1e-9) or
+            not np.allclose((interval_start+interval_end)/2, t, rtol=0, atol=1e-6)):
+        raise ValueError('Interval endpoints must agree with the archived centers and durations')
+    if time_range is not None:
+        if (len(time_range) != 2 or not np.isfinite(time_range).all() or
+                not interval_start.min() <= time_range[0] < time_range[1] <= interval_end.max()):
+            raise ValueError('time_range must lie inside the acquisition interval bounds')
+        select = (interval_start >= time_range[0]) & (interval_end <= time_range[1])
+        if select.sum() < 3:
+            raise ValueError('The selected time range needs at least three native samples')
+        spacetime = dict(spacetime)
+        for key in ('A', 'epsilon', 'valid_mask', 'interval_center_s', 'interval_dt_s',
+                    'interval_start_s', 'interval_end_s'):
+            if key in spacetime:
+                spacetime[key] = np.asarray(spacetime[key])[select]
+        t, a, eps, valid = t[select], a[select], eps[select], valid[select]
+        interval_start, interval_end, dt = interval_start[select], interval_end[select], dt[select]
+    if (len(s_range) != 2 or not np.isfinite(s_range).all() or
+            not 0 <= s_range[0] < s_range[1] <= 1):
+        raise ValueError('s_range must be ordered cervix-to-fundus coordinates inside 0..1')
+    ids = np.flatnonzero((s >= s_range[0]) & (s <= s_range[1]))
+    if len(ids) < 3:
+        raise ValueError('The selected fixed region needs at least three sampled sections')
+    good = valid & np.isfinite(a) & np.isfinite(eps)
+    lo, hi = int(ids[0]), int(ids[-1]+1)
+    walls = []
+    # At least one retained FFT frequency is needed, not a demand for 120 s.
+    minimum = max(3, int(np.ceil(60/5/np.median(np.diff(t)))))
+    for wall in (0, 1):
+        per_pair = []
+        for section in ids:
+            blocks = []
+            for start, end in contiguous_blocks(good[:, wall, section], minimum):
+                amplitude = summarize_interval_strain(eps[start:end, wall, section], t[start:end])
+                if amplitude['positive_frequency_bins'] == 0:
+                    continue
+                blocks.append(dict(start_s=float(t[start]), end_s=float(t[end-1]),
+                                   samples=end-start, band_SD=float(amplitude['band_SD_mean']),
+                                   raw_SD=float(amplitude['raw_SD_mean']),
+                                   frequency_resolution_cpm=amplitude['time_resolution_cpm'],
+                                   positive_frequency_bins=amplitude['positive_frequency_bins']))
+            samples = sum(row['samples'] for row in blocks)
+            pooled = {kind: float(np.sqrt(sum(row['samples']*row[kind]**2 for row in blocks)/samples))
+                      if samples else None for kind in ('band_SD', 'raw_SD')}
+            per_pair.append(dict(section=int(section), s=float(s[section]),
+                                 analyzed_samples=samples, blocks=blocks, **pooled))
+        analyzed = [row for row in per_pair if row['band_SD'] is not None]
+        covers_region = len(analyzed) == len(ids)
+        available_amplitude = float(np.mean([row['band_SD'] for row in analyzed])) if analyzed else None
+        common = good[:, wall, lo:hi].all(1)
+        walls.append(dict(wall=wall, per_pair=per_pair,
+                          radial_stretch_activity_amplitude=available_amplitude if covers_region else None,
+                          partial_region_activity_amplitude_QC=available_amplitude if not covers_region else None,
+                          amplitude_status=('complete_requested_region' if covers_region else
+                                            'insufficient_section_support' if analyzed else 'no_analyzable_sections'),
+                          raw_interval_strain_SD_QC=float(np.mean([row['raw_SD'] for row in analyzed])) if analyzed else None,
+                          analyzed_sections=len(analyzed), requested_sections=len(ids),
+                          amplitude_covers_all_requested_sections=covers_region,
+                          valid_fraction=float(good[:, wall, lo:hi].mean()),
+                          common_region_duration_s=_duration(common, interval_start, interval_end)))
+    # Retain the exact region: a varying set of surviving columns would change
+    # the patient's physiological measurement between windows.
+    fixed = dict(spacetime, valid_mask=good.copy())
+    complete = good[:, :, lo:hi].all(2)
+    fixed['valid_mask'][:, :, lo:hi] &= complete[:, :, None]
+    modes = analyze_modes(fixed, regions=[(0, lo, hi, 'anterior'), (1, lo, hi, 'posterior')],
+                          refine_velocity=refine_mode_speed, include_velocity=include_mode_velocity)
+    events, pairs = [], []
+    counts = dict(status='not_reviewed', event_count=None, event_frequency_cpm=None)
+    if review is not None:
+        intervals = np.asarray(review['intervals'], float)
+        if (intervals.ndim != 2 or intervals.shape[1] != 2 or not np.isfinite(intervals).all()
+                or np.any(intervals[:, 1] <= intervals[:, 0]) or
+                np.any(intervals[:, 0] < interval_start.min()) or
+                np.any(intervals[:, 1] > interval_end.max())):
+            raise ValueError('Reviewed intervals must lie inside the retained acquisition bounds')
+        reviewed = np.zeros(len(t), bool)
+        for start, end in intervals:
+            reviewed |= (interval_start >= start) & (interval_end <= end)
+        seen = set()
+        for item in review['events']:
+            key = (str(item['event_id']), item['wall'])
+            if key in seen:
+                raise ValueError('Duplicate event_id and wall; merge the annotations first')
+            seen.add(key)
+            row = measure_event(spacetime, item)
+            inside_region = row['sections'][0] >= lo and row['sections'][-1] < hi
+            inside_review = any(start <= row['start_s'] and row['end_s'] <= end for start, end in intervals)
+            supported = (t >= row['start_s']) & (t <= row['end_s'])
+            if not inside_region or not inside_review or not complete[supported, row['wall']].all():
+                row['status'] = 'outside_fixed_observation_support'
+            events.append(row)
+        for event_id in {row['event_id'] for row in events}:
+            rows = [row for row in events if row['event_id'] == event_id]
+            if len(rows) == 2 and max(row['start_s'] for row in rows) > min(row['end_s'] for row in rows):
+                raise ValueError('Shared event_id on two walls requires overlapping event time bounds')
+        exposure = complete & reviewed[:, None]
+        duration = _duration(exposure.any(1), interval_start, interval_end)
+        accepted = [row for row in events if row['status'] in ('reviewed_propagation', 'reviewed_complex_activity')]
+        ids_counted = {row['event_id'] for row in accepted}
+        failed = [row for row in events if row['status'] not in
+                  ('reviewed_propagation', 'reviewed_complex_activity', 'no_resolved_propagation')]
+        exhaustive = bool(review['complete']) and not failed and duration > 0
+        directions = {}
+        for event_id in sorted(ids_counted):
+            values = {row['direction'] for row in accepted if row['event_id'] == event_id}
+            directions[event_id] = next(iter(values)) if len(values) == 1 else 'complex'
+        speeds = {name: [] for name in ('C2F', 'F2C')}
+        for event_id, name in directions.items():
+            if name in speeds:
+                values = [row['velocity_paths_per_s'] for row in accepted
+                          if row['event_id'] == event_id and row['velocity_paths_per_s'] is not None]
+                if values:
+                    speeds[name].append(float(np.mean(values)))
+        counts = dict(status='reviewed' if exhaustive else 'partial_review_or_support',
+                      event_count=len(ids_counted) if exhaustive else None,
+                      supported_reviewed_event_count=len(ids_counted),
+                      event_frequency_cpm=60*len(ids_counted)/duration if exhaustive else None,
+                      effective_duration_s=duration,
+                      duration_rule='union_of_reviewed_fixed_region_support_on_either_wall',
+                      median_event_velocity_paths_per_s={name: float(np.median(values)) if values else None
+                                                        for name, values in speeds.items()},
+                      velocity_pooling='mean_across_paired_walls_then_median_across_events_per_direction',
+                      direction_proportions={name: sum(value == name for value in directions.values())/len(directions)
+                                             if directions else None for name in ('C2F', 'F2C', 'complex')})
+        pairs = pair_wall_events(accepted, s)
+    return dict(definition_version='radial_wave_features_v2',
+                requested_s_range=list(s_range), sampled_s_range=[float(s[lo]), float(s[hi-1])],
+                analyzed_time_range_s=[float(t[0]), float(t[-1])],
+                analyzed_interval_center_range_s=[float(t[0]), float(t[-1])],
+                analyzed_acquisition_time_range_s=[float(interval_start.min()), float(interval_end.max())],
+                requested_acquisition_time_range_s=list(time_range) if time_range is not None else None,
+                time_range_rule='full_measurement_interval_containment',
+                duration_definition='union_of_supported_measurement_intervals',
+                sections=ids.tolist(), nominal_interval_s=float(spacetime.get('nominal_interval_s', np.median(dt))),
+                actual_interval_s_range=[float(dt.min()), float(dt.max())],
+                amplitude_units='dimensionless', amplitude_band_cpm=[.5, 5.],
+                amplitude_pooling='sample_weighted_within_segment_variance_per_pair_then_spatial_mean',
+                primary_amplitude_requires_all_requested_sections=True,
+                amplitude_interpretation='interval_radial_stretch_activity_not_total_single_contraction_strain',
+                walls=walls, modes=modes, events=events, event_summary=counts,
+                paired_wall_events=pairs, event_velocity_units='full_cervix_fundus_paths_per_second')
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/patient.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/radial_events.py | git_blob_sha=2d4f18133d72b87dca6cb4e672a569b930f425a2 ================
+"""Reviewable propagation evidence from radial A(s,t).
+
+Keep short and unpaired structures. Pairing ranks propagation coherence rather
+than event count; engineering diagnostics do not establish physiological truth.
+"""
+from dataclasses import dataclass, asdict
+import numpy as np
+from .amplitude import band_limited_signal
+
+
+@dataclass(frozen=True)
+class RadialWaveConfig:
+    # Fit reference is used jointly with order/phase evidence, not as a veto.
+    min_fit_r2: float = .5
+    synchronous_tolerance_s: float = .5
+
+
+def _runs(mask):
+    return np.flatnonzero(np.diff(np.r_[False, mask, False])).reshape(-1, 2)
+
+
+def _fit(s, t):
+    slope, intercept = np.polyfit(s, t, 1)
+    residual = t-(slope*s+intercept)
+    total = float(np.sum((t-t.mean())**2))
+    return dict(slope=float(slope), intercept=float(intercept),
+                r2=float(1-np.sum(residual**2)/total) if total > 1e-20 else None,
+                rmse_s=float(np.sqrt(np.mean(residual**2))))
+
+
+def _arrival_evidence(s, arrival, dt):
+    fit = _fit(s, arrival)
+    differences = (arrival[None, :] - arrival[:, None])[np.triu_indices(len(s), 1)]
+    resolved = abs(differences) > dt
+    agreement = float(np.mean(differences[resolved] * fit['slope'] > 0)) if resolved.any() else .5
+    extent = abs(fit['slope']) * float(np.ptp(s))
+    # Continuous engineering ranking, not a calibrated probability or p-value.
+    quality = (max(fit['r2'] or 0., 0.) * max(2*agreement-1, 0.) *
+               extent/(extent + 2*fit['rmse_s'] + dt))
+    return dict(**fit, order_agreement=agreement, fitted_time_extent_s=extent,
+                coherence=float(quality))
+
+
+def _describe_arrival(ids, arrival, s, dt, phase_fits, config):
+    evidence = _arrival_evidence(s[ids], arrival, dt)
+    warnings = []
+    delta = np.diff(arrival)
+    monotone = bool(np.all(delta >= -dt) or np.all(delta <= dt))
+    weak_fit = (evidence['r2'] or 0.) < config.min_fit_r2
+    phase_conflict = any(p['slope']*evidence['slope'] < 0 for p in phase_fits)
+    if not monotone: warnings.append('nonmonotone_arrivals')
+    if weak_fit: warnings.append('weak_arrival_fit')
+    if phase_conflict: warnings.append('phase_direction_conflict')
+    if any((p['r2'] or 0.) < config.min_fit_r2 for p in phase_fits):
+        warnings.append('weak_phase_fit')
+    if np.ptp(arrival) <= max(dt, config.synchronous_tolerance_s):
+        kind = 'synchronous'
+    elif not monotone and (weak_fit or phase_conflict):
+        kind = 'complex'
+    else:
+        kind = 'C2F' if evidence['slope'] > 0 else 'F2C'
+    return dict(classification=kind, sections=ids.tolist(),
+                s_start=float(s[ids[0]]), s_end=float(s[ids[-1]]),
+                spatial_span=float(s[ids[-1]]-s[ids[0]]),
+                arrival_time_s=arrival.tolist(), arrival_fit_R2=evidence['r2'],
+                arrival_fit_RMSE_s=evidence['rmse_s'],
+                arrival_time_slope=evidence['slope'], arrival_evidence=evidence,
+                velocity_paths_per_s=float(1/evidence['slope']) if kind in ('C2F','F2C') else None,
+                phase_arrival_fits=phase_fits, quality_flags=warnings)
+
+
+def _measure_pair(edge, ridges, filtered, t, s, config):
+    first, second = [ridges[edge[name]] for name in ('first', 'second')]
+    left = {x['column']: x for x in first['nodes']}
+    right = {x['column']: x for x in second['nodes']}
+    ids = np.asarray(edge['columns'])
+    arrival = []
+    for j in ids:
+        k, k2 = left[j]['last'], right[j]['first']
+        before, after = filtered[k, j], filtered[k2, j]
+        arrival.append(t[k] - before/(after-before)*(t[k2]-t[k]))
+    dt = float(np.median(np.diff(t)))
+    phases = [_arrival_evidence(s[ids], np.array([p[j]['peak_time_s'] for j in ids]), dt)
+              for p in (left, right)]
+    event = _describe_arrival(ids, np.asarray(arrival), s, dt, phases, config)
+    quality = event['arrival_evidence']['coherence']
+    for phase in phases:
+        quality *= phase['coherence']
+    agreeing = sum(p['slope']*event['arrival_time_slope'] > 0 for p in phases)
+    # Shared support contributes only in proportion to temporal coherence.
+    edge['association_weight'] = len(ids)*quality*(1+agreeing)/3
+    event.update(evidence_kind='paired_phase', arrival_marker='between_phase_zero_crossing',
+                 association_weight=edge['association_weight'],
+                 start_s=min(left[j]['start_s'] for j in ids),
+                 end_s=max(right[j]['end_s'] for j in ids),
+                 leading_polarity=first['sign'], phase_ridge_ids=[first['id'], second['id']],
+                 first_phase_arrival_s=[left[j]['peak_time_s'] for j in ids],
+                 second_phase_arrival_s=[right[j]['peak_time_s'] for j in ids],
+                 peak_absolute_rate_per_phase=[max(left[j]['amplitude'] for j in ids),
+                                               max(right[j]['amplitude'] for j in ids)])
+    return event
+
+
+def _lobes(y, valid, t, threshold):
+    filtered = np.full_like(y, np.nan)
+    columns = [[] for _ in range(y.shape[1])]
+    minimum = max(3, int(np.ceil(12/np.median(np.diff(t)))))
+    for col in range(y.shape[1]):
+        for run_id, (begin, end) in enumerate(_runs(valid[:, col])):
+            if end-begin < minimum:
+                continue
+            signal = band_limited_signal(y[begin:end, col], t[begin:end])
+            filtered[begin:end, col] = signal
+            edges = np.r_[0, np.flatnonzero(np.diff(signal >= 0))+1, len(signal)]
+            for sequence, (a, b) in enumerate(zip(edges[:-1], edges[1:])):
+                # A censored phase cannot establish a complete bipolar event.
+                if a == 0 or b == len(signal):
+                    continue
+                peak = int(a+np.argmax(abs(signal[a:b])))
+                amplitude = float(abs(signal[peak]))
+                if amplitude <= max(float(threshold[col]), 1e-12):
+                    continue
+                columns[col].append(dict(column=col, run_id=run_id, sequence=sequence,
+                    sign=1 if signal[peak] > 0 else -1, peak_index=int(begin+peak),
+                    peak_time_s=float(t[begin+peak]), amplitude=amplitude,
+                    first=int(begin+a), last=int(begin+b-1),
+                    start_s=float(t[begin+a]), end_s=float(t[begin+b-1])))
+    return filtered, columns
+
+
+def _ridges(columns, t, s):
+    nodes=[]
+    for column in columns:
+        for node in column:
+            node['id']=len(nodes);nodes.append(node)
+    parent=list(range(len(nodes)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i]=parent[parent[i]];i=parent[i]
+        return i
+
+    for left, right in zip(columns[:-1], columns[1:]):
+        choices=[]
+        for a in left:
+            for b in right:
+                delay=abs(a['peak_time_s']-b['peak_time_s'])
+                scale=.5*((a['end_s']-a['start_s'])+(b['end_s']-b['start_s']))
+                overlap=min(a['end_s'],b['end_s'])-max(a['start_s'],b['start_s'])
+                if a['sign']==b['sign'] and delay<=scale and overlap>=0:
+                    choices.append((delay,a['id'],b['id']))
+        used_left=set();used_right=set()
+        for _, a, b in sorted(choices):
+            if a in used_left or b in used_right:continue
+            parent[find(a)]=find(b);used_left.add(a);used_right.add(b)
+    groups={}
+    for node in nodes:groups.setdefault(find(node['id']),[]).append(node)
+    ridges=[]
+    for group in groups.values():
+        if len(group)<3:continue
+        group=sorted(group,key=lambda node:node['column'])
+        ids=np.array([node['column'] for node in group])
+        arrival=np.array([node['peak_time_s'] for node in group])
+        ridges.append(dict(id=len(ridges), sign=group[0]['sign'], nodes=group,
+                           fit=_fit(s[ids],arrival), center_s=float(np.median(arrival))))
+    return ridges
+
+
+def _phase_edges(ridges):
+    edges={}
+    for i,a in enumerate(ridges):
+        for j in range(i+1,len(ridges)):
+            b=ridges[j]
+            if a['sign']==b['sign']:continue
+            left={node['column']:node for node in a['nodes']}
+            right={node['column']:node for node in b['nodes']}
+            common=sorted(set(left)&set(right))
+            # Adjacent phases must belong to the same continuous track run in
+            # each shared column. No phase pairing over a missing interval.
+            common=[k for k in common if left[k]['run_id']==right[k]['run_id'] and
+                    abs(left[k]['sequence']-right[k]['sequence'])==1]
+            if len(common)<3 or np.any(np.diff(common)!=1):continue
+            delta=np.array([right[k]['peak_time_s']-left[k]['peak_time_s'] for k in common])
+            if not (np.all(delta>0) or np.all(delta<0)):continue
+            early,late=(a,b) if delta.mean()>0 else (b,a)
+            edges[i,j]=dict(first=early['id'], second=late['id'], columns=common,
+                            score=(1,len(common),int(early['sign']<0)))
+    return edges
+
+
+def _pair_phases(ridges, edges):
+    """Non-overlapping adjacent phase pairs, without counting both polarities.
+
+    Maximize shared support weighted by propagation coherence. No reward for
+    pair count or preferred polarity. Unselected phases remain review evidence.
+    """
+    neighbors={i:[] for i in range(len(ridges))}
+    for i,j in edges:neighbors[i].append(j);neighbors[j].append(i)
+    ambiguous=[i for i in neighbors if len(neighbors[i])>1]
+    negative=[i for i in neighbors if ridges[i]['sign']<0 and neighbors[i]]
+    positive=[i for i in neighbors if ridges[i]['sign']>0 and neighbors[i]]
+    if not negative or not positive:return [],ambiguous
+    n=len(negative);m=len(positive)
+    # Dummy columns permit unmatched phases, including zero-coherence pairs.
+    cost=np.zeros((n,m+n),float)
+    cost[:,:m]=1
+    for row,i in enumerate(negative):
+        for col,j in enumerate(positive):
+            edge=edges.get(tuple(sorted((i,j))))
+            if edge is not None:
+                cost[row,col]=-edge['association_weight']
+    # Rectangular shortest-augmenting-path assignment (rows <= columns).
+    u=np.zeros(n+1);v=np.zeros(m+n+1)
+    owner=np.zeros(m+n+1,int);previous=np.zeros(m+n+1,int)
+    for row in range(1,n+1):
+        owner[0]=row;col=0;minimum=np.full(m+n+1,np.inf);used=np.zeros(m+n+1,bool)
+        while True:
+            used[col]=True;current_row=owner[col];delta=np.inf;next_col=0
+            for j in range(1,m+n+1):
+                if used[j]:continue
+                reduced=cost[current_row-1,j-1]-u[current_row]-v[j]
+                if reduced<minimum[j]:minimum[j]=reduced;previous[j]=col
+                if minimum[j]<delta:delta=minimum[j];next_col=j
+            u[owner[used]]+=delta;v[used]-=delta;minimum[~used]-=delta
+            col=next_col
+            if owner[col]==0:break
+        while col:
+            before=previous[col];owner[col]=owner[before];col=before
+    chosen=[]
+    for col in range(1,m+1):
+        if owner[col] and cost[owner[col]-1,col-1]<0:
+            chosen.append(tuple(sorted((negative[owner[col]-1],positive[col-1]))))
+    return chosen,ambiguous
+
+
+def detect_radial_events(signal, valid, time_s, space, *, noise_floor, config=None):
+    """Find radial propagation evidence, with an explicit noise scale.
+
+    noise_floor is an absolute A threshold (s^-1), scalar or one per section.
+    It must come from a stated noise reference, not per-video robust-z scaling.
+    Space stays on the original full cervix-to-fundus axis, without rescaling.
+    """
+    config=config or RadialWaveConfig()
+    y=np.asarray(signal,float);m=np.asarray(valid,bool);t=np.asarray(time_s,float);s=np.asarray(space,float)
+    if (y.shape!=m.shape or y.shape!=(len(t),len(s)) or len(t)<3 or len(s)<3 or
+            not np.isfinite(t).all() or not np.isfinite(s).all() or np.any(np.diff(s)<=0) or
+            np.any((s<0)|(s>1)) or np.any(np.diff(t)<=0) or
+            not np.allclose(np.diff(t),np.median(np.diff(t)),rtol=1e-5,atol=1e-9)):
+        raise ValueError('Expected matching native-uniform time x ordered normalized-space maps')
+    threshold=np.broadcast_to(np.asarray(noise_floor,float),(len(s),))
+    if not np.isfinite(threshold).all() or np.any(threshold<0):raise ValueError('Invalid absolute noise floor')
+    if not 0<=config.min_fit_r2<=1 or config.synchronous_tolerance_s<0:
+        raise ValueError('Invalid radial event support settings')
+    filtered,columns=_lobes(y,m&np.isfinite(y),t,threshold)
+    ridges=_ridges(columns,t,s);edges=_phase_edges(ridges)
+    measured={key:_measure_pair(edge,ridges,filtered,t,s,config) for key,edge in edges.items()}
+    pairs,ambiguous=_pair_phases(ridges,edges);events=[]
+    for key in pairs:
+        events.append(dict(measured[key],event_id='',reviewed=False,
+                           phase_pairing_ambiguous=any(i in ambiguous for i in key)))
+    used={i for key in pairs for i in key}
+    for ridge in ridges:
+        if ridge['id'] in used:continue
+        nodes=ridge['nodes'];ids=np.array([n['column'] for n in nodes])
+        arrival=np.array([n['peak_time_s'] for n in nodes])
+        event=_describe_arrival(ids,arrival,s,float(np.median(np.diff(t))),[],config)
+        event['quality_flags'].append('single_phase_event_identity_unresolved')
+        events.append(dict(event,event_id='',reviewed=False,evidence_kind='single_phase',
+            arrival_marker='phase_peak',start_s=min(n['start_s'] for n in nodes),
+            end_s=max(n['end_s'] for n in nodes),leading_polarity=ridge['sign'],
+            phase_ridge_ids=[ridge['id']],phase_pairing_ambiguous=ridge['id'] in ambiguous,
+            first_phase_arrival_s=arrival.tolist(),second_phase_arrival_s=[],
+            peak_absolute_rate_per_phase=[max(n['amplitude'] for n in nodes)]))
+    for event in events:
+        if event['phase_pairing_ambiguous']:
+            event['quality_flags'].append('alternative_phase_pairing')
+    events.sort(key=lambda event:(np.median(event['arrival_time_s']),event['s_start']))
+    for i,event in enumerate(events,1):event['event_id']=f'candidate_{i:03d}'
+    return dict(status='automatic_radial_wave_candidates_require_review',config=asdict(config),
+        candidate_algorithm='radial_phase_evidence_v2',
+        noise_floor_rate=threshold.copy(),filter_band_cpm=[.5,5.],filtered_A=filtered,
+        events=events,candidate_count=len(events),
+        traveling_candidate_count=sum(e['classification'] in ('C2F','F2C') for e in events),
+        ambiguous_phase_ridge_ids=ambiguous,unpaired_ridge_count=len(ridges)-2*len(pairs),
+        alternative_phase_pairs=[dict(measured[key],selected=key in pairs)
+                                 for key in edges],
+        event_count=None,event_frequency_cpm=None,
+        phase_ridges=[dict(ridge_id=r['id'],sign=r['sign'],sections=[x['column'] for x in r['nodes']],
+                           peak_time_s=[x['peak_time_s'] for x in r['nodes']],fit=r['fit']) for r in ridges])
+
+
+def radial_candidates_from_maps(spacetime, *, noise_floor, s_range=(0.,1.), config=None):
+    """Use current 2 s radial-map interface and retain original section IDs."""
+    a=np.asarray(spacetime['A'],float);valid=np.asarray(spacetime['valid_mask'],bool)
+    t=np.asarray(spacetime['interval_center_s'],float);s=np.asarray(spacetime['s'],float)
+    if a.shape!=(len(t),2,len(s)) or valid.shape!=a.shape:
+        raise ValueError('Expected time x two-wall x section radial maps')
+    if len(s_range)!=2 or not 0<=s_range[0]<s_range[1]<=1:
+        raise ValueError('Invalid anatomical s_range')
+    ids=np.flatnonzero((s>=s_range[0])&(s<=s_range[1]))
+    if len(ids)<3:raise ValueError('Selected region needs at least three native sections')
+    filtered=np.full_like(a,np.nan);walls=[]
+    for wall in (0,1):
+        result=detect_radial_events(a[:,wall][:,ids],valid[:,wall][:,ids],t,s[ids],
+                                   noise_floor=noise_floor,config=config)
+        filtered[:,wall,ids]=result.pop('filtered_A')
+        for event in result['events']:
+            event['event_id']=f"wall{wall}_{event['event_id']}"
+            event['wall']=wall;event['sections']=ids[event['sections']].tolist()
+        for ridge in result['phase_ridges']:ridge['sections']=ids[ridge['sections']].tolist()
+        for edge in result['alternative_phase_pairs']:
+            edge['sections']=ids[edge['sections']].tolist()
+            edge['wall']=wall
+        walls.append(dict(wall=wall,**result))
+    report=dict(status='automatic_radial_wave_candidates_require_review',
+        measurement_source='A_rate',measurement_units='s^-1',source_section_indices=ids.tolist(),
+        requested_s_range=list(s_range),sampled_s_range=[float(s[ids[0]]),float(s[ids[-1]])],
+        center_time_range_s=[float(t[0]),float(t[-1])],
+        nominal_interval_s=float(spacetime.get('nominal_interval_s',np.median(spacetime['interval_dt_s']))),
+        walls=walls,event_count=None,event_frequency_cpm=None,
+        note='Two-wall candidate counts are not summed; review event identity and arrivals before patient rates.')
+    arrays=dict(filtered_A=filtered,candidate_valid_mask=valid&np.isfinite(filtered),
+                interval_center_s=t.copy(),s=s.copy())
+    return report,arrays
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/radial_events.py ================
