@@ -1,121 +1,93 @@
 # 01 — Feature extraction
 
-本模块负责完整的：
+本模块负责：
 
 ```text
-原始超声视频 / 已有冻结缓存
-→ A0 追踪与运动校正
-→ 径向时空表征
-→ 幅度 / ER / MSE / M1
-→ 独立 R2 frequency
-→ 技术 QC
-→ outputs/auto_features.csv
+原始超声视频
+→ 追踪 / 运动校正
+→ 局部运动表征
+→ 幅度 / ER / MSE / M1 / R2
+→ QC
+→ 自动特征表
 ```
 
-## 正式运行版本
+## 当前迁移状态
 
-正式入口位于：
+### 已迁入
 
-```text
-frozen_runtime_20261126/
-```
+1. **P3 / radial tracking**
+   - 来源：`wyxwyx357-del/uterine-tracking`
+   - 路径：`tracking/peristalsis_pipeline/`
+   - 原追踪入口：`tracking/entrypoints/`
+   - 来源迁移清单：`tracking/MIGRATION_MANIFEST_SOURCE.md`
 
-核心版本：
+2. **A0 / radial deformation / amplitude / ER / mode features**
+   - 来源：`wyxwyx357-del/uterine-wave-propagation-features`
+   - 路径：`wave_features/uterine_wave/`
+   - 冻结入口：`wave_features/run_frozen_features.py`
 
-- pipeline: `UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1`
-- M1: `m1-global-pairing-unseen-v1`
-- R2: `R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106`
+3. **Frozen M1 / record MSE**
+   - 来源分支：`m1-global-pairing-unseen-v1-source-20261126`
+   - 功能副本：`m1/frozen_source/`、`er_mse/frozen_source/`
+   - 原包结构：`frozen_m1_mse_bundle/`
 
-该目录是当前正式运行源。算法源码来自既有冻结代码，不因本纵向研究重新调参。
+### 尚未迁入
 
-## 一键运行
+4. **R2 local dominant frequency**
+   - 当前只恢复到冻结源码文件名与 SHA256；
+   - Python 源文件本体当前不可访问，因此没有根据报告重写；
+   - 校验清单：`r2_frequency/EXPECTED_SOURCE_HASHES.json`
 
-准备 manifest 后：
+详细来源见 [SOURCE_PROVENANCE.md](SOURCE_PROVENANCE.md)。
+
+## 运行 wave feature 包
 
 ```bash
-python 01_feature_extraction/run_feature_extraction.py \
-  --manifest <manifest.csv> \
-  --work-dir 01_feature_extraction/outputs/frozen_run \
-  --r2-workers 6 \
-  --resume
+cd 01_feature_extraction/wave_features
+python -m pip install -e .
 ```
 
-成功后自动产生：
+CUDA LK 需要带 `cudaoptflow` 的 CUDA OpenCV。普通 `opencv-python` wheel 不等价于原 CUDA 环境，不能静默回退 CPU。
+
+冻结特征入口：
+
+```bash
+python run_frozen_features.py audit ...
+python run_frozen_features.py run ...
+```
+
+具体参数沿用源码入口和原仓库说明。
+
+## P3 tracking
+
+P3 追踪保持原独立实现。源码在：
+
+```text
+tracking/peristalsis_pipeline/
+```
+
+完整追踪入口在：
+
+```text
+tracking/entrypoints/run_tracking_only_pipeline.py
+```
+
+该分支和 wave_features 中的 A0 tracking 不是“同一个文件换名字”，不得在不验证的情况下互相替换。
+
+## 输出到纵向分析
+
+纵向模块的目标输入仍为：
 
 ```text
 01_feature_extraction/outputs/auto_features.csv
 ```
 
-纵向分析模块默认直接读取这个文件。
+目前各冻结分支已经能产生各自原始结果，但**统一 auto_features.csv 的最终聚合器尚未冻结**。在 R2 源码到位前，不应假装已经形成“所有动态特征一键导出”的最终生产链。
 
-## Manifest
+## 数据边界
 
-正式 manifest 模板：
-
-```text
-frozen_runtime_20261126/manifest_template.csv
-```
-
-字段包括：
-
-- `case_id`
-- `video`
-- `annotation`
-- `pose`
-- `time_factor`
-- 可选 A0 已有缓存
-- `r2_tracking`
-- `r2_nodes`
-- `mm_per_processed_pixel`
-
-A0 正式流程仍按原冻结设计使用 pose/校正输入。本次迁移**没有新增或替换 pose 算法**。
-
-## 代码分层
-
-### `frozen_runtime_20261126/`
-
-当前真正运行的冻结全流程。包含：
-
-- A0 measurement dependencies
-- amplitude / ER / MSE
-- M1
-- R2
-- final batch runner
-- environment/preflight checks
-- source lock
-
-### `a0_wave_pipeline/`
-
-历史 `3b6e054...` A0/波特征审计快照，保留用于追溯和对照。
-
-### `m1/frozen_source/`
-
-M1 独立冻结来源快照，来源提交 `75d26aca...`。
-
-### `er_mse/frozen_source/`
-
-MSE patient-level 核心实现来源快照。
-
-## 环境
-
-正式运行依赖：
-
-```bash
-python -m pip install -r 01_feature_extraction/frozen_runtime_20261126/requirements.txt
-```
-
-**不要安装 pip 的 `opencv-python` 去替换现有环境。**
-
-追踪需要原项目使用的 CUDA-enabled OpenCV / `cudaoptflow`。环境不满足时应停止，不自动退回 CPU 算法。
-
-## 输出边界
-
-统一输出字段见 [OUTPUT_SCHEMA.md](OUTPUT_SCHEMA.md)。
-
-- 特征失败保持缺失；
-- 不用 0 代替失败；
-- 不读取妊娠结局；
-- 不因纵向结果修改追踪/特征定义；
-- R2、M1、MSE 保持各自原始解释边界。
-
-来源与迁移校验见 [SOURCE_PROVENANCE.md](SOURCE_PROVENANCE.md)。
+- 不读取妊娠结局来调整追踪/特征算法；
+- 缺失保持缺失，不补 0；
+- 不跨失追、reanchor、segment/pose epoch 断点拼接；
+- R2、M1、ER/MSE 各自保持原定义边界；
+- 患者数据和本地输出不提交 Git。
