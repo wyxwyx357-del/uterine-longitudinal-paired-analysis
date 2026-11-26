@@ -3,12 +3,17 @@
 Revision:
 
 ```text
-20261126_gemini_audit_fix2
+20261126_gemini_audit_fix3
 ```
 
-Fix2 additionally closes the two MINOR findings from the first post-fix re-audit:
+Fix3 closes the final completion-audit BLOCKER and the two remaining MINOR findings:
+- `run_tracking_batch.py` skips failed case IDs during merged-table assembly, so a single tracking failure cannot raise `KeyError` and collapse R2 for successful cases;
+- `track_and_cache_frequency.py` writes temporary cache files with a non-`.npz` suffix, so interrupted temporary files are not discovered as trajectory caches;
+- `02_delta_and_qc.py`, `03_module_comovement.py`, and `04_outcome_self_control.py` preserve `exam_id` and `patient_id` as strings when re-reading `master_long.csv`.
+
+Fix2 had already closed the earlier two MINOR findings:
 - `export_auto_features.py` validates the `case_id` column and missing values before string coercion, so malformed NaN IDs cannot become the literal string `"nan"`;
-- `preflight_tests.py` now uses `Path(__file__).resolve().parent` as the frozen-runtime import root.
+- `preflight_tests.py` uses `Path(__file__).resolve().parent` as the frozen-runtime import root.
 
 This revision is intentionally limited to orchestration, identity preservation,
 input validation and reproducibility safeguards. It does **not** change the
