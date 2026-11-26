@@ -203,12 +203,24 @@ def _load_auto_features(path: Path) -> pd.DataFrame | None:
         print(f"[INFO] Optional auto feature file not found: {path}")
         return None
 
-    auto = pd.read_csv(path)
+    auto = pd.read_csv(
+        path,
+        dtype={
+            "case_id": str,
+            "exam_id": str,
+            "检查ID": str,
+            "record_id": str,
+        },
+    )
     auto = _rename_known_columns(
         auto,
         cfg.AUTO_COLUMN_ALIASES,
         required={"exam_id"},
     )
+
+    auto["exam_id"] = auto["exam_id"].astype(str).str.strip()
+    if auto["exam_id"].eq("").any() or auto["exam_id"].isna().any():
+        raise ValueError("Dynamic feature table contains blank exam_id values.")
 
     keep = ["exam_id"] + [
         c
@@ -263,6 +275,10 @@ def main() -> None:
         cfg.CLINICAL_EXCEL,
         sheet_name=cfg.CLINICAL_SHEET,
         engine="openpyxl",
+        dtype={
+            "检查ID": str,
+            "患者分组": str,
+        },
     )
     clinical = _rename_known_columns(
         clinical,
@@ -274,6 +290,10 @@ def main() -> None:
             "video_duration_s",
         },
     )
+
+    clinical["exam_id"] = clinical["exam_id"].astype(str).str.strip()
+    if clinical["exam_id"].eq("").any() or clinical["exam_id"].isna().any():
+        raise ValueError("Clinical sheet contains blank exam_id values.")
 
     if clinical["exam_id"].duplicated().any():
         bad = clinical.loc[
@@ -320,6 +340,15 @@ def main() -> None:
     else:
         print(f"[INFO] Dynamic feature table: {feature_path}")
     if auto is not None:
+        feature_only = sorted(
+            set(auto["exam_id"]) - set(clinical["exam_id"])
+        )
+        if feature_only:
+            raise ValueError(
+                "Dynamic feature table contains exam_id values absent from "
+                f"the clinical table: {feature_only[:20]}"
+            )
+
         overlap = [
             c
             for c in auto.columns
