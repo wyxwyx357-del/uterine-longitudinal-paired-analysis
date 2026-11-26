@@ -28,9 +28,13 @@ UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1
 锁文件：
 
 ```text
+PIPELINE_ORCHESTRATION_LOCK.json
 frozen_runtime_20261126/SOURCE_LOCK.json
 frozen_runtime_20261126/FINAL_PIPELINE_SPEC.json
 ```
+
+其中 `PIPELINE_ORCHESTRATION_LOCK.json` 锁定正式入口/调度文件；
+`SOURCE_LOCK.json` 锁定底层 measurement/R2 源码。
 
 该 runtime 是当前工作流的正式执行来源。不要把 `wave_features/`、`m1/frozen_source/` 或独立 P3 仓库中的文件人工拼成另一条生产主链。
 
@@ -114,8 +118,6 @@ annotation
 pose
 time_factor
 a0_spacetime_cache
-a0_tracks_cache
-a0_layout_cache
 r2_tracking
 r2_nodes
 mm_per_processed_pixel
