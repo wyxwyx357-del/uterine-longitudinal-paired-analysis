@@ -3,8 +3,12 @@
 Revision:
 
 ```text
-20261126_gemini_audit_fix1
+20261126_gemini_audit_fix2
 ```
+
+Fix2 additionally closes the two MINOR findings from the first post-fix re-audit:
+- `export_auto_features.py` validates the `case_id` column and missing values before string coercion, so malformed NaN IDs cannot become the literal string `"nan"`;
+- `preflight_tests.py` now uses `Path(__file__).resolve().parent` as the frozen-runtime import root.
 
 This revision is intentionally limited to orchestration, identity preservation,
 input validation and reproducibility safeguards. It does **not** change the
