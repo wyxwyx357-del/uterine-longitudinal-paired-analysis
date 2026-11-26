@@ -1,0 +1,15 @@
+{
+  "lock_version": "PIPELINE_ORCHESTRATION_LOCK_20261126_FIX1",
+  "purpose": "Formal feature-extraction orchestration only; algorithm definitions remain locked separately in frozen_runtime_20261126/SOURCE_LOCK.json",
+  "algorithm_definition_unchanged": true,
+  "git_blob_sha1": {
+    "01_feature_extraction/run_feature_extraction.py": "1f48f4f6ec2c20e12ee734b39eefee747e011bf7",
+    "01_feature_extraction/export_auto_features.py": "69628060ee7dec25572f692e083d5dacb36f289b",
+    "01_feature_extraction/frozen_runtime_20261126/run_final_batch.py": "1e229010bf85b3864e0a388a1194b4ead336186f",
+    "01_feature_extraction/frozen_runtime_20261126/verify_environment.py": "ade09ea4e2995779e09e3127a37addc4f219ccb6",
+    "01_feature_extraction/frozen_runtime_20261126/preflight_tests.py": "54f29b676c26d0254053381496e9daed299ba948",
+    "01_feature_extraction/frozen_runtime_20261126/FINAL_PIPELINE_SPEC.json": "ea3656294542c1f27afcf1b3c88a97ab1e2a5037",
+    "01_feature_extraction/frozen_runtime_20261126/SOURCE_LOCK.json": "3d37801b986beef7843ab6e9a03f416e039dfd4a",
+    "01_feature_extraction/frozen_runtime_20261126/manifest_template.csv": "afbdac923869a5c301e50bfbd01f8de6537d4e0e"
+  }
+}
