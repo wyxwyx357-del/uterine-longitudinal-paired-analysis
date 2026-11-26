@@ -18,49 +18,78 @@ DEFAULT_FEATURES = [
 ]
 
 
-def paired_wide(df: pd.DataFrame, features: list[str]) -> pd.DataFrame:
-    required = {"patient_id", "pair_order"}
+def longitudinal_values(df: pd.DataFrame, features: list[str]) -> pd.DataFrame:
+    """Return all repeated examinations in patient-time order."""
+    required = {"patient_id", "exam_id", "exam_order"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns: {sorted(missing)}")
 
-    dup = df.duplicated(["patient_id", "pair_order"], keep=False)
-    if dup.any():
-        raise ValueError("Each patient must have exactly one row for pair_order 1 and 2.")
+    if df[["patient_id", "exam_order"]].duplicated().any():
+        raise ValueError("Each patient must have only one row per exam_order.")
 
     present = [c for c in features if c in df.columns]
     if not present:
         raise ValueError("None of the requested features are present.")
 
-    wide = df.pivot(index="patient_id", columns="pair_order", values=present)
-    if 1 not in wide.columns.get_level_values(1) or 2 not in wide.columns.get_level_values(1):
-        raise ValueError("Both pair_order 1 and 2 are required.")
-
-    rows = pd.DataFrame(index=wide.index)
-    for feature in present:
-        v1 = pd.to_numeric(wide[(feature, 1)], errors="coerce")
-        v2 = pd.to_numeric(wide[(feature, 2)], errors="coerce")
-        rows[f"{feature}__exam1"] = v1
-        rows[f"{feature}__exam2"] = v2
-        rows[f"{feature}__delta"] = v2 - v1
-
-    return rows.reset_index()
+    cols = ["patient_id", "exam_id", "exam_order"] + present
+    return df[cols].sort_values(["patient_id", "exam_order"]).reset_index(drop=True)
 
 
-def summarize_delta(paired: pd.DataFrame, features: list[str]) -> pd.DataFrame:
+def consecutive_changes(df: pd.DataFrame, features: list[str]) -> pd.DataFrame:
+    """Calculate every consecutive within-patient change.
+
+    A patient with n examinations contributes n-1 intervals.
+    These intervals remain clustered within patient and must not be treated as
+    independent patients in downstream inference.
+    """
+    ordered = longitudinal_values(df, features)
+    present = [c for c in features if c in ordered.columns]
+
+    records: list[dict] = []
+    for patient_id, g in ordered.groupby("patient_id", sort=False):
+        g = g.sort_values("exam_order").reset_index(drop=True)
+        if len(g) < 2:
+            continue
+
+        for i in range(1, len(g)):
+            prev = g.iloc[i - 1]
+            curr = g.iloc[i]
+            row = {
+                "patient_id": patient_id,
+                "from_exam_id": prev["exam_id"],
+                "to_exam_id": curr["exam_id"],
+                "from_exam_order": prev["exam_order"],
+                "to_exam_order": curr["exam_order"],
+            }
+            for feature in present:
+                a = pd.to_numeric(pd.Series([prev[feature]]), errors="coerce").iloc[0]
+                b = pd.to_numeric(pd.Series([curr[feature]]), errors="coerce").iloc[0]
+                row[f"{feature}__from"] = a
+                row[f"{feature}__to"] = b
+                row[f"{feature}__delta"] = b - a
+            records.append(row)
+
+    return pd.DataFrame.from_records(records)
+
+
+def summarize_delta(changes: pd.DataFrame, features: list[str]) -> pd.DataFrame:
     records = []
     for feature in features:
         col = f"{feature}__delta"
-        if col not in paired.columns:
+        if col not in changes.columns:
             continue
-        s = pd.to_numeric(paired[col], errors="coerce").dropna()
+        s = pd.to_numeric(changes[col], errors="coerce").dropna()
         if s.empty:
             continue
 
         records.append(
             {
                 "feature": feature,
-                "n": int(s.size),
+                "interval_n": int(s.size),
+                "patient_n": int(
+                    changes.loc[s.index, "patient_id"].nunique()
+                ),
                 "median_delta": float(s.median()),
                 "q1_delta": float(s.quantile(0.25)),
                 "q3_delta": float(s.quantile(0.75)),
@@ -80,12 +109,20 @@ def main() -> None:
     args = p.parse_args()
 
     df = pd.read_csv(args.input_csv)
-    paired = paired_wide(df, args.features)
-    summary = summarize_delta(paired, args.features)
+    trajectories = longitudinal_values(df, args.features)
+    changes = consecutive_changes(df, args.features)
+    summary = summarize_delta(changes, args.features)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    paired.to_csv(args.output_dir / "paired_change_case_level.csv", index=False)
-    summary.to_csv(args.output_dir / "paired_change_summary.csv", index=False)
+    trajectories.to_csv(
+        args.output_dir / "longitudinal_exam_values.csv", index=False
+    )
+    changes.to_csv(
+        args.output_dir / "consecutive_within_patient_changes.csv", index=False
+    )
+    summary.to_csv(
+        args.output_dir / "consecutive_change_summary.csv", index=False
+    )
 
     print(summary.to_string(index=False))
 
