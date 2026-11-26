@@ -1,152 +1,108 @@
-# Source provenance
+# Feature extraction source provenance
 
-本文件记录本仓库特征提取代码的来源，防止迁移后混淆版本。
+本目录中的算法源码以“迁移已有实现”为原则，不重新设计核心算法。
 
-## 1. 正式运行版本
-
-正式运行目录：
-
-```text
-frozen_runtime_20261126/
-```
+## 1. P3 / radial tracking
 
 来源仓库：
 
-```text
-wyxwyx357-del/uterine-wave-propagation-features
-```
+- `wyxwyx357-del/uterine-tracking`
+- 该仓库自身记录来源基线：`wyxwyx357-del/end@a9cf11b95293e395e0a90a1e3340393d782a2d5d`
 
-来源分支：
+迁入位置：
 
-```text
-final-dynamic-batch-20261126
-```
+- `tracking/peristalsis_pipeline/`
+- `tracking/entrypoints/`
 
-完整流水线版本：
+核心迁入文件保持来源文本内容，包括：
 
-```text
-UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1
-```
+- `tracking_lk.py`
+- `tracking_mesh.py`
+- `radial_pair_geometry.py`
+- `tracking_huang_fusion.py`
+- `tracking_huang_wall_fusion.py`
+- `tracking_huang_radial_pairs.py`
+- P3 boundary correction / anatomical QC / artifact QC
+- tracking-only pipeline entrypoint
 
-迁入的 `SOURCE_LOCK.json` 与原分支 Git blob SHA 完全一致：
+来源迁移清单保存在：
 
-```text
-a3c5ec2fea94ac4c982f89e16b47fb6246f07223
-```
+- `tracking/MIGRATION_MANIFEST_SOURCE.md`
 
-正式入口 `run_final_batch.py` 原 Git blob：
+## 2. A0 -> radial deformation / amplitude / ER / mode / candidate events
 
-```text
-c0990fad6dc498ea1c57032f44fe9d3df1ae8ad5
-```
+来源仓库：
 
-迁移后已核对一致。\n\n按 `SOURCE_LOCK.json` 反向检查正式 runtime 的 Git 锁定源码：\n\n```text\nexpected locked files: 34\nmissing:               0\nmismatch:              0\nbyte-exact:             yes\n```\n
-## 2. M1
+- `wyxwyx357-del/uterine-wave-propagation-features`
 
-冻结来源提交：
+迁入位置：
 
-```text
-75d26aca0803c15535383b8a62b372c10a521863
-```
+- `wave_features/uterine_wave/`
 
-算法版本：
+迁入实际 Python 包，包括：
 
-```text
-m1-global-pairing-unseen-v1
-```
+- `geometry.py`
+- `_lk.py`
+- `tracking.py`
+- `quality.py`
+- `deformation.py`
+- `amplitude.py`
+- `spectrum.py`
+- `modes.py`
+- `patient.py`
+- `radial_events.py`
+- `candidate_evidence.py`
+- `events.py`
+- `wavefit.py`
+- `io.py`
+- `frozen_pipeline.py`
+- `input_inventory.py`
+- `controls.py`
+- `cli.py`
 
-除了正式 runtime 中的依赖，还在：
+冻结流水线入口：
 
-```text
-m1/frozen_source/
-```
+- `wave_features/run_frozen_features.py`
 
-保留独立来源快照。
+该链与 P3 独立仓库有历史/接口关系，但不能把二者混成同一算法版本。
 
-## 3. R2
+## 3. Frozen M1 / record MSE
 
-版本：
+最终源码来源分支：
 
-```text
-R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106
-```
+- repository: `wyxwyx357-del/uterine-wave-propagation-features`
+- branch: `m1-global-pairing-unseen-v1-source-20261126`
 
-完整冻结目录：
+功能分类副本：
 
-```text
-frozen_runtime_20261126/r2_frozen/
-```
+- `m1/frozen_source/`
+- `er_mse/frozen_source/`
 
-包含 22 个正式冻结文件。
+同时保留原包路径结构：
 
-迁移方法不是人工重写：原文件按原始字节创建 Git blob，再与本地冻结源的 Git blob SHA 逐项比对。
+- `frozen_m1_mse_bundle/analysis/mse_pregnancy_association/code/`
 
-核验结果：
+这样不修改原源码中的 `analysis.mse_pregnancy_association...` import 路径。
 
-```text
-expected files: 22
-found files:    22
-missing:        0
-mismatch:       0
-byte-exact:     yes
-```
+其中包括：
 
-本地冻结源码包 SHA256：
+- activity counting
+- global event ownership
+- normalized activity
+- patient activity aggregation
+- activity strength
+- record MSE numeric core
+- strict record-MSE measurement boundary
 
-```text
-47e478d4ca3d2ff8c0ee5b3e1ff37a4635e1484a9c014663875e0840bf014906
-```
+## 4. R2 local dominant frequency
 
-该 SHA 仅用于来源审计；仓库公开内容不包含患者数据。
+R2 必须保持独立链，不能用本仓库的 ER/spectrum 或 M1 替代。
 
-## 4. 历史 A0 审计快照
+当前状态：
 
-目录：
+- 已确认历史源码文件名和 SHA256 清单；
+- 当前 GitHub 仓库与可访问文件库中未找到对应 Python 源文件字节；
+- 因此 **R2 源码尚未迁入**；
+- `r2_frequency/EXPECTED_SOURCE_HASHES.json` 保存已知冻结哈希，供后续源码到位后逐文件校验。
 
-```text
-a0_wave_pipeline/
-```
-
-来源提交：
-
-```text
-3b6e0541766849a13ff6e0de37cdf011695e04e8
-```
-
-该目录保留为历史审计/对照快照，不应替代 `frozen_runtime_20261126/` 作为当前正式一键运行入口。
-
-## 5. ER/MSE
-
-正式运行实现位于 `frozen_runtime_20261126/`。
-
-另外在：
-
-```text
-er_mse/frozen_source/
-```
-
-保留 patient-level MSE 核心来源文件，便于单独审计。
-
-## 6. 迁移边界
-
-本次迁移：
-
-- 不修改算法公式；
-- 不改变冻结阈值；
-- 不读取妊娠结局；
-- 不上传患者数据；
-- 不新增 pose 算法；
-- 不把失败值改成 0；
-- 只新增仓库组织、运行包装和字段投影脚本。
-
-
-## 7. 静态迁移检查
-
-在不读取患者数据的条件下完成：
-
-- 冻结 runtime Python 源码 `compileall`：PASS；
-- 按新仓库嵌套目录模拟 `PYTHONPATH` 后，`run_final_batch.py --help`：PASS；
-- R2 `track_and_cache_frequency.py --help`：PASS；
-- R2 `extract_longitudinal_frequency.py --help`：PASS。
-
-这只证明迁移后的源码结构/导入可用，不等于已经在真实患者视频上完成端到端数值复现。正式批处理仍应在原 CUDA OpenCV 环境和允许使用的数据上执行。
+不得根据报告/摘要重写 R2 代码来冒充原冻结实现。
