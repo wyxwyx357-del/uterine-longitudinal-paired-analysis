@@ -1,0 +1,380 @@
+GEMINI RE-AUDIT FINAL PATCH — FIX2 ONLY
+Repository: wyxwyx357-del/uterine-longitudinal-paired-analysis
+Branch: main
+HEAD at export: 4dedfbd19f547b5318c6239942aae95c9e5b12e5
+
+Purpose:
+This small bundle contains the two MINOR findings that were directly corrected after the post-fix re-audit, plus the refreshed orchestration lock and engineering note.
+No A0/Amplitude/ER/MSE/M1/R2 measurement mathematics or thresholds were changed.
+
+
+================ BEGIN FILE: 01_feature_extraction/export_auto_features.py | git_blob_sha=7419388eadddd35e8a040ce8771791a7f6f6bd18 ================
+#!/usr/bin/env python3
+"""Convert the frozen batch table to the longitudinal-analysis feature contract.
+
+This script only renames/selects fields. It does not recalculate, impute, tune,
+or filter any dynamic feature, and it never reads a pregnancy outcome.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+
+import pandas as pd
+
+
+ROOT = Path(__file__).resolve().parent
+DEFAULT_INPUT = ROOT / "outputs" / "FINAL_DYNAMIC_FEATURES.csv"
+DEFAULT_OUTPUT = ROOT / "outputs" / "auto_features.csv"
+
+RENAME = {
+    "case_id": "exam_id",
+    "R2_frequency_cpm": "r2_frequency_cpm",
+    "anterior_ER_mean_paired": "anterior_er",
+    "posterior_ER_mean_paired": "posterior_er",
+    "record_MSE_time_equal": "mse",
+    "raw_valid_fraction": "tracking_valid_fraction",
+}
+
+PRIMARY_COLUMNS = [
+    "exam_id",
+    "anterior_amplitude",
+    "posterior_amplitude",
+    "r2_frequency_cpm",
+    "anterior_er",
+    "posterior_er",
+    "mse",
+    "m1_prop_rate_min_per_min",
+    "tracking_valid_fraction",
+    "video_qc",
+    "pose_source",
+]
+
+PROVENANCE_COLUMNS = [
+    "pipeline_version",
+    "a0_status",
+    "anterior_amplitude_status",
+    "posterior_amplitude_status",
+    "mse_status",
+    "mse_decomposition_status",
+    "m1_status",
+    "m1_failure_reason",
+    "m1_algorithm_version",
+    "R2_status",
+    "R2_failure_reason",
+    "R2_retained_posterior_region_count",
+    "record_MSE_z",
+    "record_mean_bias_sq",
+    "record_sd_scale_sq",
+    "record_time_shape_term",
+    "effective_observation_seconds",
+    "m1_prop_count_min",
+    "m1_prop_count_max",
+]
+
+
+def sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def atomic_csv(frame: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    frame.to_csv(tmp, index=False)
+    os.replace(tmp, path)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    args = parser.parse_args()
+
+    if not args.input.is_file():
+        raise FileNotFoundError(args.input)
+
+    header = pd.read_csv(args.input, nrows=0)
+    if "case_id" not in header.columns:
+        raise ValueError("Frozen table must contain case_id")
+
+    source = pd.read_csv(args.input, dtype={"case_id": str})
+    if source["case_id"].isna().any():
+        raise ValueError("case_id contains missing values")
+    source["case_id"] = source["case_id"].astype(str).str.strip()
+    if source["case_id"].eq("").any():
+        raise ValueError("case_id contains blank values")
+    if source["case_id"].duplicated().any():
+        raise ValueError("case_id must be unique in FINAL_DYNAMIC_FEATURES.csv")
+
+    output = source.rename(columns=RENAME).copy()
+
+    # Keep a stable schema. Empty technical metadata stays missing; it is never
+    # synthesized from unrelated status fields.
+    for column in PRIMARY_COLUMNS:
+        if column not in output.columns:
+            output[column] = pd.NA
+
+    keep = PRIMARY_COLUMNS + [
+        column for column in PROVENANCE_COLUMNS
+        if column in output.columns and column not in PRIMARY_COLUMNS
+    ]
+    output = output[keep].copy()
+
+    # Numeric coercion preserves failed/missing measurements as NaN.
+    numeric = [
+        "anterior_amplitude",
+        "posterior_amplitude",
+        "r2_frequency_cpm",
+        "anterior_er",
+        "posterior_er",
+        "mse",
+        "m1_prop_rate_min_per_min",
+        "tracking_valid_fraction",
+        "R2_retained_posterior_region_count",
+        "record_MSE_z",
+        "record_mean_bias_sq",
+        "record_sd_scale_sq",
+        "record_time_shape_term",
+        "effective_observation_seconds",
+        "m1_prop_count_min",
+        "m1_prop_count_max",
+    ]
+    for column in numeric:
+        if column in output.columns:
+            output[column] = pd.to_numeric(output[column], errors="coerce")
+
+    atomic_csv(output, args.output)
+    manifest = {
+        "clinical_outcome_read": False,
+        "operation": "field projection only; no feature recalculation or imputation",
+        "input": str(args.input.resolve()),
+        "input_sha256": sha256(args.input),
+        "output": str(args.output.resolve()),
+        "output_sha256": sha256(args.output),
+        "rows": int(len(output)),
+        "exam_id_unique": bool(output["exam_id"].is_unique),
+        "columns": list(output.columns),
+        "renamed_fields": RENAME,
+    }
+    manifest_path = args.output.with_name(args.output.stem + "_export.json")
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    print(f"rows={len(output)}")
+    print(f"output={args.output.resolve()}")
+    print(f"manifest={manifest_path.resolve()}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+================ END FILE: 01_feature_extraction/export_auto_features.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/preflight_tests.py | git_blob_sha=f2a4d9c087dd437f947743f91f23102ef9c80db8 ================
+from __future__ import annotations
+import importlib.util, json, sys
+from pathlib import Path
+import numpy as np
+ROOT=Path(__file__).resolve().parent
+if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
+from analysis.mse_pregnancy_association.code.measurement.deformation import interval_support
+from analysis.mse_pregnancy_association.code.record_mse_core import summarize_paired_windows
+from analysis.mse_pregnancy_association.code.normalized_activity import normalize_magnitude
+
+def test_no_cross_segment():
+    tracks=dict(target_valid=np.ones((6,1),bool),step_valid=np.array([[0],[1],[1],[0],[1],[1]],bool),
+        segment_id=np.array([[0],[0],[0],[1],[1],[1]]),pose_epoch=np.zeros(6,int),time_s=np.arange(6,dtype=float))
+    assert interval_support(tracks,2)[:,0].tolist()==[True,False,False,True]
+
+def test_mse_core():
+    p=[dict(first_section=1,last_section=3,window_start_s=float(i),window_end_s=float(i+20),window_center_s=float(i+10),
+        anterior_ER=.2*(i+1),posterior_ER=.1*(i+1)) for i in range(3)]
+    r=summarize_paired_windows(p)
+    assert abs(r['record_MSE_time_equal']-np.mean(np.square([.1,.2,.3])))<1e-12 and r['unique_window_count']==3
+
+def test_minmax():
+    y=np.array([[[0.,1.,2.],[3.,4.,5.]],[[6.,7.,8.],[9.,10.,11.]]]); v=np.ones_like(y,dtype=bool)
+    _,m=normalize_magnitude(y,v)
+    assert m['cutoff']==.6 and m['normalization_scope']=='whole_video_both_walls' and abs(m['physical_cutoff']-6.6)<1e-12
+
+def test_r2_synthetic():
+    path=Path(__file__).resolve().parent/'r2_frozen'/'extract_longitudinal_frequency.py'
+    spec=importlib.util.spec_from_file_location('r2_extract',path); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    r=mod.synthetic_checks(); k=r['known_frequency_recovery_cpm']
+    assert r.get('status')=='pass' and k['1.0']==1.0 and k['2.0']==2.0 and k['3.0']==3.0
+
+def main():
+    out=[]
+    for fn in [test_no_cross_segment,test_mse_core,test_minmax,test_r2_synthetic]:
+        try: fn(); out.append({'test':fn.__name__,'status':'PASS'})
+        except Exception as e: out.append({'test':fn.__name__,'status':'FAIL','error':type(e).__name__+': '+str(e)})
+    print(json.dumps(out,ensure_ascii=False,indent=2)); return 0 if all(x['status']=='PASS' for x in out) else 2
+if __name__=='__main__': raise SystemExit(main())
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/preflight_tests.py ================
+
+================ BEGIN FILE: 01_feature_extraction/PIPELINE_ORCHESTRATION_LOCK.json | git_blob_sha=13e32493cc0e24072167ae45bd12c8e4dd4d6694 ================
+{
+  "lock_version": "PIPELINE_ORCHESTRATION_LOCK_20261126_FIX2",
+  "purpose": "Formal feature-extraction orchestration only; algorithm definitions remain locked separately in frozen_runtime_20261126/SOURCE_LOCK.json",
+  "algorithm_definition_unchanged": true,
+  "git_blob_sha1": {
+    "01_feature_extraction/run_feature_extraction.py": "1f48f4f6ec2c20e12ee734b39eefee747e011bf7",
+    "01_feature_extraction/export_auto_features.py": "7419388eadddd35e8a040ce8771791a7f6f6bd18",
+    "01_feature_extraction/frozen_runtime_20261126/run_final_batch.py": "1e229010bf85b3864e0a388a1194b4ead336186f",
+    "01_feature_extraction/frozen_runtime_20261126/verify_environment.py": "ade09ea4e2995779e09e3127a37addc4f219ccb6",
+    "01_feature_extraction/frozen_runtime_20261126/preflight_tests.py": "f2a4d9c087dd437f947743f91f23102ef9c80db8",
+    "01_feature_extraction/frozen_runtime_20261126/FINAL_PIPELINE_SPEC.json": "9dd5c540f35fec92be4d06ca4d7c044c50f85c9a",
+    "01_feature_extraction/frozen_runtime_20261126/SOURCE_LOCK.json": "20a9843cd506d8c646c30e1ee1f3c2a082db4194",
+    "01_feature_extraction/frozen_runtime_20261126/manifest_template.csv": "afbdac923869a5c301e50bfbd01f8de6537d4e0e"
+  }
+}
+================ END FILE: 01_feature_extraction/PIPELINE_ORCHESTRATION_LOCK.json ================
+
+================ BEGIN FILE: 01_feature_extraction/ENGINEERING_FIXES_20261126.md | git_blob_sha=0284ceb70dc9bfc4a38674c9499214dfa2a9e285 ================
+# Engineering hardening after Gemini final audit — 2026-11-26
+
+Revision:
+
+```text
+20261126_gemini_audit_fix2
+```
+
+Fix2 additionally closes the two MINOR findings from the first post-fix re-audit:
+- `export_auto_features.py` validates the `case_id` column and missing values before string coercion, so malformed NaN IDs cannot become the literal string `"nan"`;
+- `preflight_tests.py` now uses `Path(__file__).resolve().parent` as the frozen-runtime import root.
+
+This revision is intentionally limited to orchestration, identity preservation,
+input validation and reproducibility safeguards. It does **not** change the
+locked mathematical definitions or thresholds of A0, amplitude, ER, MSE, M1 or
+R2.
+
+## Fixed BLOCKER 1 — source-lock verification
+
+- corrected `verify_environment.py` so `SOURCE_LOCK.json` paths are resolved
+  relative to `frozen_runtime_20261126/`, where the locked source actually lives;
+- added repository `.gitattributes` with LF line endings for text source files;
+- hash verification canonicalizes text line endings to LF, preventing Windows
+  `core.autocrlf` from producing false source-lock failures;
+- added `01_feature_extraction/PIPELINE_ORCHESTRATION_LOCK.json` for the formal
+  entry/wrapper/spec files that were previously outside `SOURCE_LOCK.json`.
+
+## Fixed BLOCKER 2 — one R2 case must not abort the cohort
+
+- `r2_frozen/run_tracking_batch.py` now merges all successfully completed cases
+  even when other cases fail;
+- failed cases are recorded in `merged_results/failed_cases.csv` and in
+  `resumable_status.json`;
+- downstream cache discovery ignores caches from cases whose tracking state is
+  not `complete`;
+- `run_final_batch.py` carries failed/invalid R2 cases forward as
+  `R2_frequency_cpm = NaN` plus `R2_status` and `R2_failure_reason`;
+- an unexpected whole-stage R2 exception is isolated from A0/M1/MSE so the final
+  examination table can still be produced with explicit R2 failure status.
+
+No failed R2 measurement is replaced by zero.
+
+## Fixed BLOCKER 3 — case/exam ID type stability
+
+- manifest `case_id` remains a string from CSV input onward;
+- R2 pandas CSV readers explicitly preserve `case_id` as string;
+- compatibility export preserves `case_id` before renaming to `exam_id`;
+- longitudinal clinical/feature merge preserves exam identifiers as strings;
+- dynamic feature rows whose exam IDs do not exist in the clinical table now
+  raise an explicit error instead of being silently dropped.
+
+This protects identifiers such as `00123` from accidental conversion to
+`123`.
+
+## Fixed MAJOR — relative manifest paths
+
+Formal manifest path fields are resolved relative to the manifest file's own
+directory before A0/R2 processing:
+
+- video
+- annotation
+- pose
+- a0_spacetime_cache
+- r2_tracking
+- r2_nodes
+
+R2 therefore receives absolute paths even when the user supplies portable
+relative manifest paths.
+
+## Explicit geometry preflight
+
+The current R2 algorithm still has its existing source-video geometry
+requirement:
+
+```text
+1260 x 910
+```
+
+This algorithmic assumption was **not changed**. Instead,
+`verify_tracking_inputs.py` now reports
+`unsupported_video_geometry:<width>x<height>;expected_1260x910` before
+tracking. The incompatible case is isolated rather than allowed to crash the
+cohort.
+
+Changing the R2 background ROI or geometry normalization would be a measurement
+algorithm change and is outside this engineering revision.
+
+## Formal manifest cleanup
+
+The formal manifest template no longer advertises
+`a0_tracks_cache` / `a0_layout_cache`, because the formal
+`run_final_batch.py` does not consume them.
+
+The deprecated broken `run_final_batch_full.py` wrapper was removed from the
+formal runtime. Git history retains it for audit.
+
+## Lock state after fixes
+
+- orchestration lock: verified against current Git blob SHAs;
+- modified R2 source files: verified against current canonical-LF SHA256 values
+  in `SOURCE_LOCK.json`;
+- `algorithm_definition_unchanged = true` is recorded in the lock/spec.
+
+## Still intentionally unchanged
+
+The following were **not** modified:
+
+- A0 tracking parameters;
+- amplitude definition;
+- ER 20 s / 0.5–5 cpm directional spectrum definition;
+- record MSE formulas;
+- M1 thresholds/identity/count definition;
+- R2 0.5–5.0 cpm grid and 0.05 cpm step;
+- R2 fixed-point/continuous-segment rules;
+- R2 high + validated-stable-medium retention;
+- final posterior retained-region equal-mean aggregation;
+- R2 hard-coded background ROI / source geometry algorithm.
+
+## Required local validation before full patient batch
+
+On the target CUDA machine, run:
+
+```bash
+python 01_feature_extraction/frozen_runtime_20261126/verify_environment.py
+python 01_feature_extraction/frozen_runtime_20261126/preflight_tests.py
+```
+
+Then perform a small engineering pilot containing at least:
+
+1. one normal case;
+2. one deliberately invalid/failed R2 case;
+3. one string ID with leading zero, e.g. `00123`;
+4. one manifest using relative paths.
+
+Expected behavior: the valid cases continue, failed measurements remain NaN
+with status/reason, IDs remain exact strings, and
+`FINAL_DYNAMIC_FEATURES.csv` is still produced.
+================ END FILE: 01_feature_extraction/ENGINEERING_FIXES_20261126.md ================
