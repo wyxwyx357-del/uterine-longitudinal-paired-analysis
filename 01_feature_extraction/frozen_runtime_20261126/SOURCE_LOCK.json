@@ -63,7 +63,7 @@
     "run_tracking_batch.py": "190b1e235cd81711fa89c925a71ae7e87363312938a7822137cc812f129b35e4",
     "track_and_cache_frequency.py": "89f9a5186bd1b150eb6b318ed6935c3d13c68c5f94452a038f4ad1ba1251a728",
     "validate_reproducibility.py": "87502483895c2fda9d5ffea6dca2e177831594fa1c460751bb46270e25ad61a1",
-    "verify_tracking_inputs.py": "19223fdd3e2d6a11cda5e9b9cedf42efd796df8a1c1e2baf72aabbd691a3e97e"
+    "verify_tracking_inputs.py": "6f9df04ef43bd30eb49c7ad57b1f2170e8b396aa1b47f623be74fb091c40a722"
   },
   "clinical_outcome_code_included": false,
   "experimental_pose_reset_included": false,
