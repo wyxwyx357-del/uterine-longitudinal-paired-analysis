@@ -1,9 +1,11 @@
 # Patient / clinical data: never commit
-data/
-private/
-raw/
-clinical/
-videos/
+**/data_raw/
+**/data/
+**/private/
+**/raw/
+**/clinical/
+**/videos/
+**/inputs/
 *.xlsx
 *.xls
 *.csv
@@ -17,10 +19,12 @@ videos/
 *.npz
 *.npy
 
-# Generated local outputs
-outputs/
-figures/
-reports_private/
+# Generated local outputs / caches
+**/outputs/
+**/figures/
+**/reports_private/
+**/cache/
+**/tracking_outputs/
 
 # Python
 __pycache__/
