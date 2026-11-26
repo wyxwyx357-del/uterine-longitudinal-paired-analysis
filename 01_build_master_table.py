@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 import config as cfg
+
+
+def _series_or_nan(df: pd.DataFrame, col: str) -> pd.Series:
+    if col in df.columns:
+        return df[col]
+    return pd.Series(np.nan, index=df.index)
 
 
 def _find_column(df: pd.DataFrame, aliases: list[str]) -> str | None:
@@ -62,15 +67,15 @@ def _parse_yes_no(value) -> float:
 
 
 def _build_outcome(df: pd.DataFrame) -> None:
-    clinical = df.get("clinical_pregnancy_raw", pd.Series(np.nan, index=df.index))
-    biochemical = df.get("biochemical_pregnancy_raw", pd.Series(np.nan, index=df.index))
+    clinical = _series_or_nan(df, "clinical_pregnancy_raw")
+    biochemical = _series_or_nan(df, "biochemical_pregnancy_raw")
 
     clinical_num = clinical.map(_parse_yes_no)
     biochemical_num = biochemical.map(_parse_yes_no)
 
     outcome = clinical_num.copy()
     source = pd.Series("unknown", index=df.index, dtype="object")
-    source[clinical_num.notna()] = "clinical_pregnancy"
+    source.loc[clinical_num.notna()] = "clinical_pregnancy"
 
     fill_negative = outcome.isna() & (biochemical_num == 0)
     outcome.loc[fill_negative] = 0.0
@@ -84,8 +89,15 @@ def _pseudonymize_patients(df: pd.DataFrame) -> None:
     if df["patient_group_source"].isna().any():
         raise ValueError("patient_group_source contains missing values.")
 
+    parsed_time = pd.to_datetime(df["exam_datetime"], errors="coerce")
     first_time = (
-        df.groupby("patient_group_source", dropna=False)["exam_datetime"]
+        pd.DataFrame(
+            {
+                "patient_group_source": df["patient_group_source"],
+                "exam_datetime": parsed_time,
+            }
+        )
+        .groupby("patient_group_source", dropna=False)["exam_datetime"]
         .min()
         .sort_values(kind="stable")
     )
@@ -98,7 +110,13 @@ def _pseudonymize_patients(df: pd.DataFrame) -> None:
 
 def _add_time_fields(df: pd.DataFrame) -> None:
     df["exam_datetime"] = pd.to_datetime(df["exam_datetime"], errors="coerce")
-    df["transfer_date"] = pd.to_datetime(df.get("transfer_date"), errors="coerce")
+    if "transfer_date" in df.columns:
+        df["transfer_date"] = pd.to_datetime(
+            df["transfer_date"],
+            errors="coerce",
+        )
+    else:
+        df["transfer_date"] = pd.NaT
 
     if df["exam_datetime"].isna().any():
         bad = df.loc[df["exam_datetime"].isna(), "exam_id"].tolist()
@@ -113,13 +131,20 @@ def _add_time_fields(df: pd.DataFrame) -> None:
     ).dt.days
 
     df["days_to_transfer"] = (
-        df["transfer_date"].dt.normalize() - df["exam_datetime"].dt.normalize()
+        df["transfer_date"].dt.normalize()
+        - df["exam_datetime"].dt.normalize()
     ).dt.days
 
 
 def _add_motility_fields(df: pd.DataFrame) -> None:
-    fwd = pd.to_numeric(df.get("clinical_forward_rate_min"), errors="coerce")
-    bwd = pd.to_numeric(df.get("clinical_backward_rate_min"), errors="coerce")
+    fwd = pd.to_numeric(
+        _series_or_nan(df, "clinical_forward_rate_min"),
+        errors="coerce",
+    )
+    bwd = pd.to_numeric(
+        _series_or_nan(df, "clinical_backward_rate_min"),
+        errors="coerce",
+    )
 
     both_known = fwd.notna() & bwd.notna()
     total = pd.Series(np.nan, index=df.index, dtype="float64")
@@ -138,9 +163,17 @@ def _add_motility_fields(df: pd.DataFrame) -> None:
 
 
 def _add_cohort_flags(df: pd.DataFrame) -> None:
-    df["video_duration_s"] = pd.to_numeric(df["video_duration_s"], errors="coerce")
-    df["video_matched"] = df["video_duration_s"].notna() & (df["video_duration_s"] > 0)
-    df["long_video_eligible"] = df["video_duration_s"] >= cfg.DURATION_THRESHOLD
+    df["video_duration_s"] = pd.to_numeric(
+        df["video_duration_s"],
+        errors="coerce",
+    )
+    df["video_matched"] = (
+        df["video_duration_s"].notna()
+        & (df["video_duration_s"] > 0)
+    )
+    df["long_video_eligible"] = (
+        df["video_duration_s"] >= cfg.DURATION_THRESHOLD
+    )
 
     per_patient = df.groupby("patient_id").agg(
         matched_exam_n=("video_matched", "sum"),
@@ -151,30 +184,10 @@ def _add_cohort_flags(df: pd.DataFrame) -> None:
         (per_patient["matched_exam_n"] >= 2)
         & (per_patient["long_exam_n"] >= 1)
     )
-    per_patient["in_strict_set"] = per_patient["long_exam_n"] >= 2
-
-    df.drop(
-        columns=[
-            "matched_exam_n",
-            "long_exam_n",
-            "total_exam_n",
-            "in_candidate_set",
-            "in_strict_set",
-        ],
-        errors="ignore",
-        inplace=True,
+    per_patient["in_strict_set"] = (
+        per_patient["long_exam_n"] >= 2
     )
 
-    df.merge(
-        per_patient,
-        left_on="patient_id",
-        right_index=True,
-        how="left",
-        validate="many_to_one",
-        copy=False,
-    )
-
-    # DataFrame.merge does not mutate in place; assign via aligned mapping.
     for col in [
         "matched_exam_n",
         "long_exam_n",
@@ -198,12 +211,17 @@ def _load_auto_features(path: Path) -> pd.DataFrame | None:
     )
 
     keep = ["exam_id"] + [
-        c for c in cfg.AUTO_COLUMN_ALIASES if c != "exam_id" and c in auto.columns
+        c
+        for c in cfg.AUTO_COLUMN_ALIASES
+        if c != "exam_id" and c in auto.columns
     ]
     auto = auto[keep].copy()
 
     if auto["exam_id"].duplicated().any():
-        bad = auto.loc[auto["exam_id"].duplicated(keep=False), "exam_id"].tolist()
+        bad = auto.loc[
+            auto["exam_id"].duplicated(keep=False),
+            "exam_id",
+        ].tolist()
         raise ValueError(
             "AUTO_FEATURES_CSV must contain at most one row per exam_id. "
             f"Duplicates: {bad[:20]}"
@@ -215,8 +233,6 @@ def _load_auto_features(path: Path) -> pd.DataFrame | None:
 def _build_completeness(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for col in df.columns:
-        if col in {"patient_group_source", "clinical_pregnancy_raw", "biochemical_pregnancy_raw"}:
-            continue
         n = len(df)
         available = int(df[col].notna().sum())
         rows.append(
@@ -225,7 +241,9 @@ def _build_completeness(df: pd.DataFrame) -> pd.DataFrame:
                 "total_n": n,
                 "available_n": available,
                 "missing_n": n - available,
-                "available_fraction": available / n if n else np.nan,
+                "available_fraction": (
+                    available / n if n else np.nan
+                ),
             }
         )
     return pd.DataFrame(rows)
@@ -237,7 +255,8 @@ def main() -> None:
     if not cfg.CLINICAL_EXCEL.exists():
         raise FileNotFoundError(
             f"Clinical workbook not found: {cfg.CLINICAL_EXCEL}\n"
-            "Place the workbook under data_raw/ or edit CLINICAL_EXCEL in config.py."
+            "Place the workbook under data_raw/ or edit CLINICAL_EXCEL "
+            "in config.py."
         )
 
     clinical = pd.read_excel(
@@ -261,7 +280,9 @@ def main() -> None:
             clinical["exam_id"].duplicated(keep=False),
             "exam_id",
         ].tolist()
-        raise ValueError(f"Clinical sheet has duplicate exam_id values: {bad[:20]}")
+        raise ValueError(
+            f"Clinical sheet has duplicate exam_id values: {bad[:20]}"
+        )
 
     numeric_cols = [
         "source_exam_order",
@@ -291,7 +312,8 @@ def main() -> None:
     auto = _load_auto_features(cfg.AUTO_FEATURES_CSV)
     if auto is not None:
         overlap = [
-            c for c in auto.columns
+            c
+            for c in auto.columns
             if c != "exam_id" and c in clinical.columns
         ]
         if overlap:
@@ -357,14 +379,23 @@ def main() -> None:
         "cycle_link_confidence",
         "cycle_audit_status",
     ]
-    master_cols = [c for c in preferred_cols if c in clinical.columns]
+    master_cols = [
+        c for c in preferred_cols if c in clinical.columns
+    ]
     master = clinical[master_cols].copy()
 
-    # Do not export direct source identifiers such as patient_group_source or name.
-    master.to_csv(cfg.TABLES / "master_long.csv", index=False)
+    # Direct source identifiers such as name / hospital identifier are not
+    # exported. patient_id is a local pseudonymous label.
+    master.to_csv(
+        cfg.TABLES / "master_long.csv",
+        index=False,
+    )
 
     completeness = _build_completeness(master)
-    completeness.to_csv(cfg.TABLES / "data_completeness.csv", index=False)
+    completeness.to_csv(
+        cfg.TABLES / "data_completeness.csv",
+        index=False,
+    )
 
     cohort_summary = (
         master.groupby("patient_id", as_index=False)
@@ -375,32 +406,62 @@ def main() -> None:
             in_candidate_set=("in_candidate_set", "max"),
             in_strict_set=("in_strict_set", "max"),
         )
-        .sort_values(["in_strict_set", "in_candidate_set", "patient_id"], ascending=[False, False, True])
+        .sort_values(
+            [
+                "in_strict_set",
+                "in_candidate_set",
+                "patient_id",
+            ],
+            ascending=[False, False, True],
+        )
     )
-    cohort_summary.to_csv(cfg.TABLES / "cohort_summary.csv", index=False)
+    cohort_summary.to_csv(
+        cfg.TABLES / "cohort_summary.csv",
+        index=False,
+    )
 
     candidate_not_strict = cohort_summary[
-        cohort_summary["in_candidate_set"] & ~cohort_summary["in_strict_set"]
+        cohort_summary["in_candidate_set"]
+        & ~cohort_summary["in_strict_set"]
     ].copy()
     candidate_not_strict.to_csv(
         cfg.TABLES / "candidate_not_strict.csv",
         index=False,
     )
 
-    strict_patients = int(cohort_summary["in_strict_set"].sum())
-    candidate_patients = int(cohort_summary["in_candidate_set"].sum())
+    strict_patients = int(
+        cohort_summary["in_strict_set"].sum()
+    )
+    candidate_patients = int(
+        cohort_summary["in_candidate_set"].sum()
+    )
     strict_exams = int(
-        (master["in_strict_set"] & master["long_video_eligible"]).sum()
+        (
+            master["in_strict_set"]
+            & master["long_video_eligible"]
+        ).sum()
     )
     candidate_exams = int(
-        (master["in_candidate_set"] & master["video_matched"]).sum()
+        (
+            master["in_candidate_set"]
+            & master["video_matched"]
+        ).sum()
     )
 
     print("Master table built successfully.")
-    print(f"candidate patients={candidate_patients}, candidate exams={candidate_exams}")
-    print(f"strict patients={strict_patients}, strict >=60s exams={strict_exams}")
+    print(
+        f"candidate patients={candidate_patients}, "
+        f"candidate exams={candidate_exams}"
+    )
+    print(
+        f"strict patients={strict_patients}, "
+        f"strict >=60s exams={strict_exams}"
+    )
     print(f"master: {cfg.TABLES / 'master_long.csv'}")
-    print(f"cohort summary: {cfg.TABLES / 'cohort_summary.csv'}")
+    print(
+        f"cohort summary: "
+        f"{cfg.TABLES / 'cohort_summary.csv'}"
+    )
 
 
 if __name__ == "__main__":
