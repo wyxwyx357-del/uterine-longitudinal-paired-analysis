@@ -20,10 +20,12 @@
   "r2_wall": "posterior",
   "r2_patient_aggregation": "equal mean over retained posterior cervical/middle/fundal regions",
   "missing_policy": "leave blank/NaN; never replace with zero",
-  "engineering_revision": "20261126_gemini_audit_fix1",
+  "engineering_revision": "20261126_gemini_audit_fix3",
   "algorithm_definition_unchanged": true,
   "case_id_policy": "preserve as string from manifest through all R2/longitudinal joins",
   "manifest_path_policy": "relative paths resolved against the manifest directory before processing",
   "r2_case_failure_policy": "isolate failed or invalid R2 cases; retain final row with NaN and status/failure reason; do not abort successful cases",
-  "source_hash_policy": "canonical LF text hashing plus repository .gitattributes eol=lf"
+  "source_hash_policy": "canonical LF text hashing plus repository .gitattributes eol=lf",
+  "r2_partial_failure_merge_policy": "merge successful cases only; failed cases retained as status/reason and never indexed from outputs",
+  "r2_cache_temp_policy": "temporary cache files do not end in .npz and are excluded from trajectory-cache discovery"
 }
