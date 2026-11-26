@@ -1,19 +1,28 @@
 # ER / MSE
 
-ER/MSE 正式运行源码已迁入：
+## ER / mode window
+
+实际源码：
 
 ```text
-../frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/
-../frozen_runtime_20261126/analysis/mse_pregnancy_association/code/record_mse_core.py
+../wave_features/uterine_wave/spectrum.py
+../wave_features/uterine_wave/modes.py
+../wave_features/uterine_wave/patient.py
 ```
 
-另外保留来源快照：
+## Frozen record MSE
+
+最终冻结数值核心已迁入：
 
 ```text
 frozen_source/record_mse_core.py
 frozen_source/record_mse_measurement.py
 ```
 
-最终批处理输出包括前/后壁 ER、record-level MSE 以及已有的 MSE 分解项。
+为保持原 import 路径，另保留：
 
-MSE 仍是影像信号协调性候选指标，不直接表述为已验证生理协调性生物标志物。
+```text
+../frozen_m1_mse_bundle/analysis/mse_pregnancy_association/code/
+```
+
+MSE 是 ER 双壁协调性候选，不直接称为已验证生物标志物。
