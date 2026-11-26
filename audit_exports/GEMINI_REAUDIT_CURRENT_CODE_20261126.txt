@@ -1236,3 +1236,1192 @@ current workflow 的权威来源锁始终是：
 
 R2/current dynamic measurement chain 不读取妊娠结局，不以 AUC 或结局优化频率阈值。
 ================ END FILE: 01_feature_extraction/r2_frequency/README.md ================
+
+================ BEGIN FILE: 01_feature_extraction/r2_frequency/HISTORICAL_REQUESTED_SOURCE_HASHES.json | git_blob_sha=b006fa3620da38359be6863415a207ea68df908f ================
+{
+  "record_role": "historical_requested_sha_audit_only",
+  "not_current_production_lock": true,
+  "current_production_lock": "../frozen_runtime_20261126/SOURCE_LOCK.json",
+  "source": "运行参数与代码哈希.json",
+  "frequency_grid_cpm": {"start": 0.5, "stop": 5.0, "step": 0.05},
+  "note": "These hashes were requested during historical recovery. The current workflow intentionally uses the separately locked current bundle and does not claim equivalence to all hashes below.",
+  "code_sha256": {
+    "ab_block_tracking.py": "4026a9b2fe7caa638d613d3eeb731956e3ab64593b0fed6346d02c88cbcfca8f",
+    "audit_validation_v1_1.py": "a938b6143eceaf7b3a685ca1ec0f94d85c3e7d79b48e4dd002e7fc42baf5c334",
+    "contrast.py": "6aa67f9a37224d19899094c938030d663d2df93e7d2c90c9a6368d348003abd0",
+    "frequency.py": "05d61e2e94dc9a03cf2c651a854b9384979a1bda032dea5753ed2ae5d4d8f922",
+    "prepare_existing_case.py": "d72529b9a59da108cef9e4088409d137675bec03fcb82b227607f2a480a6d38b",
+    "rigid_correction.py": "6a77cde030379b72349acb3ffa0b8f7e30874281389aa2d61e830d734c5196f6",
+    "run_context_evidence_pilot.py": "b7f0f708e35577d506d3bd263d314f706742573218578c090baee6e7f85bbdec",
+    "run_frequency.py": "2efe4f4472dfd39e9609451dfcdf6c212c83076c17d829de523982690ee927ef",
+    "run_local_motion_frequency.py": "b59f716fce510e07cd2a3c37a4ca5ddfb8f0cad6394b353cd474ec4556a4607b",
+    "run_real_context_evidence.py": "a0ed6622f30011475efe84231ba5995c167d72b2de91de9fa8c0442b875d755b",
+    "run_regional_frequency.py": "451d4498de0f8d013deb694c0d90a205448ea84e718bcc6726c47f94dbc02477",
+    "run_unified_full_video_ab.py": "aa5499d604e1caceac0d7b3fab548581e1f1394bf11ec5db08cde2b12b949314",
+    "run_video.py": "4bf1428a439e67562652a74312622c130f63e23bd0dd1332fb89c778ebead756",
+    "validate_regional_v1_1.py": "54b9f0c1dd69b2695493a5ef399065d14b316663681d3d44feae8cd2bc363333"
+  }
+}
+================ END FILE: 01_feature_extraction/r2_frequency/HISTORICAL_REQUESTED_SOURCE_HASHES.json ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/README.md | git_blob_sha=c3a1443ab5d8286f24b48f6592464170d91bb298 ================
+# Frozen current dynamic runtime — 2026-11-26
+
+This directory is the formal integrated measurement runtime used by
+`01_feature_extraction/run_feature_extraction.py`.
+
+## Version
+
+```text
+UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1
+```
+
+Current R2:
+
+```text
+R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106
+```
+
+M1:
+
+```text
+m1-global-pairing-unseen-v1
+```
+
+## Locks
+
+- `../PIPELINE_ORCHESTRATION_LOCK.json`
+- `SOURCE_LOCK.json`
+- `FINAL_PIPELINE_SPEC.json`
+- `r2_frozen/FROZEN_SPEC.json`
+
+Engineering revision:
+
+```text
+20261126_gemini_audit_fix1
+```
+
+This revision changes orchestration safeguards only; the locked measurement
+definitions and thresholds are unchanged.
+
+These define the current bundled workflow. They do not claim recovery of all
+historical requested R2 SHA256 values.
+
+## Outcome boundary
+
+```text
+outcomes_read = false
+```
+
+No pregnancy outcome is used by this measurement runtime.
+
+## Output
+
+`run_final_batch.py` generates:
+
+```text
+FINAL_DYNAMIC_FEATURES.csv
+FINAL_RUN_SUMMARY.json
+```
+
+The repository-level wrapper publishes the exact CSV to:
+
+```text
+01_feature_extraction/outputs/FINAL_DYNAMIC_FEATURES.csv
+```
+
+## Environment
+
+Use Python 3.10+ and the existing CUDA-enabled OpenCV build with
+`cudaoptflow`.
+
+Do not replace it with pip `opencv-python`.
+
+Check before patient processing:
+
+```bash
+python verify_environment.py
+python preflight_tests.py
+```
+
+## R2 inputs
+
+R2 requires existing:
+
+```text
+video
+r2_tracking
+r2_nodes
+mm_per_processed_pixel
+```
+
+The workflow does not synthesize missing R2 inputs.
+
+## Missing values
+
+Measurement failure remains missing. Zero is not used as a generic failure value.
+
+
+## Engineering safeguards
+
+- case_id is preserved as a string across R2 CSV stages;
+- relative manifest paths are resolved against the manifest directory;
+- invalid/failed R2 cases are isolated and remain NaN with status/reason;
+- successful R2 cases continue and still produce FINAL_DYNAMIC_FEATURES.csv;
+- source hashes use canonical LF text hashing; .gitattributes also enforces LF.
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/README.md ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/SOURCE_LOCK.json | git_blob_sha=20a9843cd506d8c646c30e1ee1f3c2a082db4194 ================
+{
+  "final_pipeline_version": "UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1",
+  "base_repository": "wyxwyx357-del/uterine-wave-propagation-features",
+  "base_main_commit": "ffe07932c39b49f2eedfda4b841e69d98ae77754",
+  "m1_source_commit": "75d26aca0803c15535383b8a62b372c10a521863",
+  "m1_algorithm_version": "m1-global-pairing-unseen-v1",
+  "git_blob_sha1": {
+    "analysis/__init__.py": "87ed5210ce8514378db4796e666a1c64a4ec13b8",
+    "analysis/mse_pregnancy_association/__init__.py": "87ed5210ce8514378db4796e666a1c64a4ec13b8",
+    "analysis/mse_pregnancy_association/code/__init__.py": "87ed5210ce8514378db4796e666a1c64a4ec13b8",
+    "analysis/mse_pregnancy_association/code/activity_counting.py": "367c041f741d65703ddeaef24c3926a12f97d982",
+    "analysis/mse_pregnancy_association/code/activity_strength.py": "db0331848cc88d72f0f3aac169f6ec770f7d61fd",
+    "analysis/mse_pregnancy_association/code/batch_wave_counts.py": "cca924173f5bd064bdb8d82e915f5b8de00a6cc7",
+    "analysis/mse_pregnancy_association/code/candidate_split_verifier.py": "b7d4a5f038eca7f89c0c5b61b9ee2af729e82a51",
+    "analysis/mse_pregnancy_association/code/direction_identity_trial.py": "4420d5235266f822b89ac2fb4a714e5fdeadcc85",
+    "analysis/mse_pregnancy_association/code/event_input_smoothing.py": "ec82144daf4d286c5f6c3716c6ca1c3bdfe14192",
+    "analysis/mse_pregnancy_association/code/global_event_ownership.py": "8842bfe346b6a0c335abd99e2e5099903626d2b4",
+    "analysis/mse_pregnancy_association/code/normalized_activity.py": "1e051554c5ff57fb2a2493a9240aba8a036cec51",
+    "analysis/mse_pregnancy_association/code/partial_phase_events.py": "96355a97539334ea77eca2da7c443ca99dce43a0",
+    "analysis/mse_pregnancy_association/code/patient_activity_aggregation.py": "e63d565076d28e40e13229de257533f584eea137",
+    "analysis/mse_pregnancy_association/code/record_mse_core.py": "20d99c73fd1aed6768c6a00ee9ed4263c9be4a89",
+    "analysis/mse_pregnancy_association/code/measurement/__init__.py": "3b909b0aa1bc24616253232574052b573347e51c",
+    "analysis/mse_pregnancy_association/code/measurement/_lk.py": "8d0c6b2182b49ddcfbfa353a9084d7556916363d",
+    "analysis/mse_pregnancy_association/code/measurement/amplitude.py": "458e7da3f63af67a0eaba34d18402f72adb764fc",
+    "analysis/mse_pregnancy_association/code/measurement/deformation.py": "15ebcbd140a72dc36a0205116220b54bf874e7af",
+    "analysis/mse_pregnancy_association/code/measurement/events.py": "9bd0b170b58104b006fd16c53ee1112935a955ab",
+    "analysis/mse_pregnancy_association/code/measurement/geometry.py": "6cc63a645a0a81f4c1d4b77d7134b8c8bbfcae00",
+    "analysis/mse_pregnancy_association/code/measurement/io.py": "48ab492f0e947af0b104b2f08aab6a9288ce317e",
+    "analysis/mse_pregnancy_association/code/measurement/modes.py": "f325b7ec20ba0486bf2b65ebe5d57bc64a5f77c9",
+    "analysis/mse_pregnancy_association/code/measurement/patient.py": "aa9103e93c7fdb24235d4725474c59f05d87fc08",
+    "analysis/mse_pregnancy_association/code/measurement/radial_events.py": "2d4f18133d72b87dca6cb4e672a569b930f425a2",
+    "analysis/mse_pregnancy_association/code/measurement/spectrum.py": "2517fe0c5b74f09856c0747e3cf16a59535be049",
+    "analysis/mse_pregnancy_association/code/measurement/tracking.py": "1e6fd1ac3592b8eb855a547deafb53301e208a84",
+    "analysis/mse_pregnancy_association/code/measurement/wavefit.py": "60888d1088ce966e78fe32d6782a85fe7648312b",
+    "experiments/step2_salience_sandbox/__init__.py": "560626bd0f5b54c6bf43b033c9c2de3a0f5fe0e5",
+    "experiments/step2_salience_sandbox/upstream.py": "b553ce63f79aa9e35faa4cb27fcf60585409cf6b",
+    "experiments/step2_salience_sandbox/mechanism_2x2/__init__.py": "02a65cd55d2b79674a38e5e35797f01c08030b27",
+    "experiments/step2_salience_sandbox/mechanism_2x2/mechanisms.py": "0035adc24aef465dc24be4a8676869c840239259",
+    "uterine_wave/__init__.py": "3b909b0aa1bc24616253232574052b573347e51c",
+    "uterine_wave/amplitude.py": "458e7da3f63af67a0eaba34d18402f72adb764fc",
+    "uterine_wave/radial_events.py": "2d4f18133d72b87dca6cb4e672a569b930f425a2"
+  },
+  "r2_version": "R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106",
+  "r2_sha256": {
+    "FROZEN_SPEC.json": "00c186d4e62d560fa887d934862e53fc64a7bfddd1f5f3cdf85ac6fd2ea3ada5",
+    "build_medium_consensus.py": "42a4b38c2ec9b99ab5271eada9e92173028d8eed1e57aeb2d6851cb6d3a3cd88",
+    "case_manifest_template.csv": "6d7df5f24d9fe1e446f4c9b33f5b50b9eb7b0d62acae5a24b67d13f0f9fdb146",
+    "code/ab_block_tracking.py": "a96a2845bedf8174775ccb27928e188fc6e455235759cde22f664abe83fdad83",
+    "code/contrast.py": "6aa67f9a37224d19899094c938030d663d2df93e7d2c90c9a6368d348003abd0",
+    "code/cuda_sparse_lk.py": "f6c28eb982ee08e20bb473790c9a297594a47e2122ff0dcef5d1f93b5041ee8e",
+    "code/frequency.py": "05d61e2e94dc9a03cf2c651a854b9384979a1bda032dea5753ed2ae5d4d8f922",
+    "code/rigid_correction.py": "35c2c09db0cf53a35805515601d3f689db6809b2197fd1438f7923a9dc098114",
+    "code/run_context_evidence_pilot.py": "4a7a20751ed716ecac82594c1b3c9e4a893453009fc8f41f468f195b5d1b4a5d",
+    "code/run_frequency.py": "2efe4f4472dfd39e9609451dfcdf6c212c83076c17d829de523982690ee927ef",
+    "code/run_local_motion_frequency.py": "474058d3f9aa4fd6a3fbdf200d0c5d4359671408a26bdd0d3d3013a944bf3099",
+    "code/run_real_context_evidence.py": "d6740efbb4227fb037abc93a3e59bd5b8ebe9ad6ae95872456aab7c99e9bfa6d",
+    "code/run_regional_frequency.py": "451d4498de0f8d013deb694c0d90a205448ea84e718bcc6726c47f94dbc02477",
+    "code/validate_regional_v1_1.py": "54b9f0c1dd69b2695493a5ef399065d14b316663681d3d44feae8cd2bc363333",
+    "code/verify_cuda_backend.py": "6d38127dc089fcc799299f2ecf7804d64b6f6701f6b771604eaf5025e6e66764",
+    "extract_longitudinal_frequency.py": "93367a2cdb6de6995e0cf2146d7391efc3875d5fd0562f5a8c4f8e1752fda17c",
+    "prepare_frozen_inputs.py": "94cd507600bbfc0769f74bfe58c9d8d88b8e71d338fbe444250a6aec954bec0e",
+    "requirements.txt": "3b1275f05aedcab6195cd990b2c9d25db0f458042412874e918b78400cf096b6",
+    "run_tracking_batch.py": "190b1e235cd81711fa89c925a71ae7e87363312938a7822137cc812f129b35e4",
+    "track_and_cache_frequency.py": "89f9a5186bd1b150eb6b318ed6935c3d13c68c5f94452a038f4ad1ba1251a728",
+    "validate_reproducibility.py": "87502483895c2fda9d5ffea6dca2e177831594fa1c460751bb46270e25ad61a1",
+    "verify_tracking_inputs.py": "6f9df04ef43bd30eb49c7ad57b1f2170e8b396aa1b47f623be74fb091c40a722"
+  },
+  "clinical_outcome_code_included": false,
+  "experimental_pose_reset_included": false,
+  "nnunet_recovery_included": false,
+  "engineering_revision": "20261126_gemini_audit_fix1",
+  "algorithm_definition_unchanged": true
+}
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/SOURCE_LOCK.json ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/FINAL_PIPELINE_SPEC.json | git_blob_sha=9dd5c540f35fec92be4d06ca4d7c044c50f85c9a ================
+{
+  "version": "UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1",
+  "outcomes_read": false,
+  "pose_reset": false,
+  "nnunet_recovery": false,
+  "a0_interval_s": 2,
+  "mse_s_range": [
+    0.2,
+    0.8
+  ],
+  "mse_window_s": 20,
+  "mse_step_s": 1,
+  "m1_algorithm": "m1-global-pairing-unseen-v1",
+  "m1_noise_floor_s_inv": 0.0007509593468916695,
+  "m1_min_continuous_run_s": 12,
+  "m1_min_adjacent_native_sections": 3,
+  "m1_salience_cutoff": 0.6,
+  "m1_main_scalar": "m1_prop_rate_min_per_min",
+  "r2_version": "R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106",
+  "r2_wall": "posterior",
+  "r2_patient_aggregation": "equal mean over retained posterior cervical/middle/fundal regions",
+  "missing_policy": "leave blank/NaN; never replace with zero",
+  "engineering_revision": "20261126_gemini_audit_fix1",
+  "algorithm_definition_unchanged": true,
+  "case_id_policy": "preserve as string from manifest through all R2/longitudinal joins",
+  "manifest_path_policy": "relative paths resolved against the manifest directory before processing",
+  "r2_case_failure_policy": "isolate failed or invalid R2 cases; retain final row with NaN and status/failure reason; do not abort successful cases",
+  "source_hash_policy": "canonical LF text hashing plus repository .gitattributes eol=lf"
+}
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/FINAL_PIPELINE_SPEC.json ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/R2_SOURCE_NOTICE.md | git_blob_sha=f8cc1ed2d274b705d05a80902a4170dc9d231d88 ================
+# R2 frozen source notice
+
+The final batch runner expects `final_pipeline_20261126/r2_frozen/`.
+
+The exact R2 source is the previously frozen package:
+
+- Version: `R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106`
+- Frequency rule: `R2_LONGITUDINAL_TISSUE_FREQUENCY_V1_1_20261106`
+- Source files are SHA-256 locked in `SOURCE_LOCK.json`.
+- The downloadable installation package supplied for this branch vendors these unchanged R2 files into `r2_frozen/`.
+- `evaluate_frozen_model.py` is deliberately excluded because it reads clinical outcomes and is outside this outcome-blind measurement batch.
+
+Do not substitute another R2 directory or modify the locked files. `verify_environment.py` checks the vendored source hashes before a formal run.
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/R2_SOURCE_NOTICE.md ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/__init__.py | git_blob_sha=28f01b34e53ac8a41b581db6c531bda34427c2c2 ================
+"""Frozen full-batch orchestration package."""
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/__init__.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/find_cuda_env.py | git_blob_sha=7d786940e287697ea9d991e2e4398e930b14e689 ================
+from __future__ import annotations
+import json, subprocess, sys
+from pathlib import Path
+
+CHECK = r'''import json
+try:
+ import cv2
+ d=int(cv2.cuda.getCudaEnabledDeviceCount())
+ ok=bool(getattr(cv2,'cuda_SparsePyrLKOpticalFlow',None) or getattr(cv2.cuda,'SparsePyrLKOpticalFlow_create',None))
+ print(json.dumps({'ok': d>0 and ok, 'opencv':cv2.__version__, 'cuda_devices':d, 'sparse_lk':ok}))
+except Exception as e:
+ print(json.dumps({'ok':False,'error':type(e).__name__+': '+str(e)}))
+'''
+
+def probe(python):
+    try:
+        p=subprocess.run([str(python),'-c',CHECK],capture_output=True,text=True,timeout=20)
+        line=(p.stdout.strip().splitlines() or ['{}'])[-1]
+        data=json.loads(line)
+        data['python']=str(python); data['returncode']=p.returncode
+        return data
+    except Exception as e:
+        return {'ok':False,'python':str(python),'error':type(e).__name__+': '+str(e)}
+
+def main():
+    candidates=[Path(sys.executable)]
+    try:
+        p=subprocess.run(['conda','env','list','--json'],capture_output=True,text=True,timeout=20,check=True)
+        for root in json.loads(p.stdout).get('envs',[]):
+            py=Path(root)/('python.exe' if sys.platform.startswith('win') else 'bin/python')
+            if py.exists() and py not in candidates: candidates.append(py)
+    except Exception: pass
+    results=[probe(p) for p in candidates]
+    print(json.dumps(results,ensure_ascii=False,indent=2))
+    good=[r for r in results if r.get('ok')]
+    if good:
+        print('\nUSE_PYTHON='+good[0]['python']); return 0
+    print('\nNO_CUDA_OPENCV_ENV_FOUND'); return 2
+
+if __name__=='__main__': raise SystemExit(main())
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/find_cuda_env.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/preflight_tests.py | git_blob_sha=54f29b676c26d0254053381496e9daed299ba948 ================
+from __future__ import annotations
+import importlib.util, json, sys
+from pathlib import Path
+import numpy as np
+ROOT=Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
+from analysis.mse_pregnancy_association.code.measurement.deformation import interval_support
+from analysis.mse_pregnancy_association.code.record_mse_core import summarize_paired_windows
+from analysis.mse_pregnancy_association.code.normalized_activity import normalize_magnitude
+
+def test_no_cross_segment():
+    tracks=dict(target_valid=np.ones((6,1),bool),step_valid=np.array([[0],[1],[1],[0],[1],[1]],bool),
+        segment_id=np.array([[0],[0],[0],[1],[1],[1]]),pose_epoch=np.zeros(6,int),time_s=np.arange(6,dtype=float))
+    assert interval_support(tracks,2)[:,0].tolist()==[True,False,False,True]
+
+def test_mse_core():
+    p=[dict(first_section=1,last_section=3,window_start_s=float(i),window_end_s=float(i+20),window_center_s=float(i+10),
+        anterior_ER=.2*(i+1),posterior_ER=.1*(i+1)) for i in range(3)]
+    r=summarize_paired_windows(p)
+    assert abs(r['record_MSE_time_equal']-np.mean(np.square([.1,.2,.3])))<1e-12 and r['unique_window_count']==3
+
+def test_minmax():
+    y=np.array([[[0.,1.,2.],[3.,4.,5.]],[[6.,7.,8.],[9.,10.,11.]]]); v=np.ones_like(y,dtype=bool)
+    _,m=normalize_magnitude(y,v)
+    assert m['cutoff']==.6 and m['normalization_scope']=='whole_video_both_walls' and abs(m['physical_cutoff']-6.6)<1e-12
+
+def test_r2_synthetic():
+    path=Path(__file__).resolve().parent/'r2_frozen'/'extract_longitudinal_frequency.py'
+    spec=importlib.util.spec_from_file_location('r2_extract',path); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    r=mod.synthetic_checks(); k=r['known_frequency_recovery_cpm']
+    assert r.get('status')=='pass' and k['1.0']==1.0 and k['2.0']==2.0 and k['3.0']==3.0
+
+def main():
+    out=[]
+    for fn in [test_no_cross_segment,test_mse_core,test_minmax,test_r2_synthetic]:
+        try: fn(); out.append({'test':fn.__name__,'status':'PASS'})
+        except Exception as e: out.append({'test':fn.__name__,'status':'FAIL','error':type(e).__name__+': '+str(e)})
+    print(json.dumps(out,ensure_ascii=False,indent=2)); return 0 if all(x['status']=='PASS' for x in out) else 2
+if __name__=='__main__': raise SystemExit(main())
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/preflight_tests.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/requirements.txt | git_blob_sha=1e26380df7d8f8f3fbd097bcc5dc221c8a08794a ================
+numpy
+pandas
+scipy
+scikit-learn
+openpyxl
+matplotlib
+pytest
+# IMPORTANT: do not install opencv-python here.
+# Keep/use the existing CUDA-enabled OpenCV build with cudaoptflow.
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/requirements.txt ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/run_final_batch.py | git_blob_sha=1e229010bf85b3864e0a388a1194b4ead336186f ================
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import traceback
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+RUNTIME_ROOT = Path(__file__).resolve().parent
+if str(RUNTIME_ROOT) not in sys.path:
+    sys.path.insert(0, str(RUNTIME_ROOT))
+
+from analysis.mse_pregnancy_association.code.measurement.io import read_video, jsonable
+from analysis.mse_pregnancy_association.code.measurement.geometry import read_labelme, layout
+from analysis.mse_pregnancy_association.code.measurement.tracking import track_segments
+from analysis.mse_pregnancy_association.code.measurement.deformation import compute_spacetime
+from analysis.mse_pregnancy_association.code.measurement.patient import summarize_patient
+from analysis.mse_pregnancy_association.code.record_mse_core import summarize_paired_windows
+from analysis.mse_pregnancy_association.code.batch_wave_counts import count_map
+from experiments.step2_salience_sandbox.mechanism_2x2.mechanisms import intervention
+
+PIPELINE_VERSION = "UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1"
+M1_VERSION = "m1-global-pairing-unseen-v1"
+M1_NOISE_FLOOR = 0.0007509593468916695
+MSE_S_RANGE = (0.2, 0.8)
+R2_VERSION = "R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106"
+MANIFEST_PATH_FIELDS = (
+    "video",
+    "annotation",
+    "pose",
+    "a0_spacetime_cache",
+    "r2_tracking",
+    "r2_nodes",
+)
+
+
+def sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def text(v):
+    return "" if v is None else str(v).strip()
+
+
+def optional_path(v):
+    s = text(v)
+    return Path(s) if s else None
+
+
+def save_json(path: Path, obj):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(jsonable(obj), ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def load_npz(path: Path) -> dict:
+    with np.load(path, allow_pickle=False) as z:
+        return {k: z[k] for k in z.files}
+
+
+def validate_spacetime(maps: dict):
+    needed = {"A", "epsilon", "valid_mask", "s", "interval_start_s", "interval_end_s", "interval_center_s", "interval_dt_s"}
+    missing = needed - set(maps)
+    if missing:
+        raise ValueError("A0 spacetime cache missing keys: " + ",".join(sorted(missing)))
+    a = np.asarray(maps["A"], float)
+    v = np.asarray(maps["valid_mask"], bool)
+    s = np.asarray(maps["s"], float)
+    t = np.asarray(maps["interval_center_s"], float)
+    if a.shape != v.shape or a.shape != (len(t), 2, len(s)):
+        raise ValueError("A0 spacetime cache shape mismatch")
+    if len(t) < 3 or not np.isfinite(t).all() or np.any(np.diff(t) <= 0):
+        raise ValueError("A0 spacetime cache invalid timeline")
+    nominal = float(np.asarray(maps.get("nominal_interval_s", 2.0)).reshape(-1)[0])
+    if abs(nominal - 2.0) > 1e-6:
+        raise ValueError(f"Expected frozen nominal_interval_s=2.0, got {nominal}")
+
+
+def run_or_load_a0(row: dict, case_dir: Path):
+    cache = optional_path(row.get("a0_spacetime_cache"))
+    if cache is not None:
+        if not cache.is_file():
+            raise FileNotFoundError(f"a0_spacetime_cache not found: {cache}")
+        maps = load_npz(cache)
+        validate_spacetime(maps)
+        return maps, {"a0_source": "external_spacetime_cache", "a0_cache_path": str(cache), "a0_cache_sha256": sha256(cache)}
+
+    video = optional_path(row.get("video")); annotation = optional_path(row.get("annotation")); pose_path = optional_path(row.get("pose"))
+    for name, p in (("video", video), ("annotation", annotation), ("pose", pose_path)):
+        if p is None or not p.is_file():
+            raise FileNotFoundError(f"missing_{name}_input")
+    time_factor = float(text(row.get("time_factor")) or "1.0")
+    frames, t = read_video(video, time_factor=time_factor, coordinate_scale=.5)
+    grid = layout(read_labelme(annotation, coordinate_scale=.5))
+    pose = load_npz(pose_path)
+    for key in ("time_s", "poses", "pose_epoch"):
+        if key not in pose:
+            raise ValueError(f"pose cache missing {key}")
+    if pose["time_s"].shape != t.shape or not np.allclose(pose["time_s"], t, atol=1e-6, rtol=0):
+        raise ValueError("pose_timeline_mismatch")
+    tracks = track_segments(
+        frames, np.vstack((grid["A_points"], grid["B_points"])), t, pose["poses"],
+        pose_epoch=pose["pose_epoch"], pose_valid=pose.get("pose_valid"), recover=True
+    )
+    maps = compute_spacetime(tracks, grid, interval_s=2.0)
+    validate_spacetime(maps)
+    a0_dir = case_dir / "a0"
+    a0_dir.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(a0_dir / "tracks.npz", **tracks)
+    np.savez_compressed(a0_dir / "layout.npz", **grid)
+    np.savez_compressed(a0_dir / "spacetime_2s.npz", **maps)
+    meta = {
+        "a0_source": "fresh_frozen_A0",
+        "video": str(video), "annotation": str(annotation), "pose": str(pose_path),
+        "time_factor": time_factor, "decoded_frame_count": len(t),
+        "decoded_video_span_s": float(t[-1] - t[0]),
+        "video_sha256": sha256(video), "annotation_sha256": sha256(annotation), "pose_sha256": sha256(pose_path),
+    }
+    save_json(a0_dir / "input_provenance.json", meta)
+    return maps, meta
+
+
+def mean_or_none(values):
+    vals = [float(v) for v in values if v is not None and np.isfinite(v)]
+    return float(np.mean(vals)) if vals else None
+
+
+def summarize_maps(case_id: str, maps: dict, case_dir: Path):
+    validate_spacetime(maps)
+    features = summarize_patient(maps, s_range=MSE_S_RANGE, include_mode_velocity=False)
+    paired = features["modes"]["paired_ER_windows"]
+    mse = summarize_paired_windows(paired)
+    with intervention("M1"):
+        m1 = count_map(maps, M1_NOISE_FLOOR)
+
+    m1_seconds = float(m1.get("effective_observation_seconds") or 0.0)
+    if m1.get("status") == "completed" and m1_seconds > 0:
+        m1_status = "completed"
+        count_min = m1.get("significant_propagation_activity_count_min")
+        count_max = m1.get("significant_propagation_activity_count_max")
+        rate_min = m1.get("significant_propagation_activity_frequency_cpm_min")
+        rate_max = m1.get("significant_propagation_activity_frequency_cpm_max")
+        m1_reason = ""
+    else:
+        m1_status = "no_effective_support" if m1.get("status") == "no_analyzable_event_support" else str(m1.get("status") or "failed")
+        count_min = count_max = rate_min = rate_max = None
+        m1_reason = str(m1.get("failure_reason") or "")
+
+    windows = features["modes"]["windows"]
+    ant_windows = [r for r in windows if int(r["wall"]) == 0]
+    post_windows = [r for r in windows if int(r["wall"]) == 1]
+    mean_cols = mean_or_none([(int(r["last_section"]) - int(r["first_section"]) + 1) for r in paired])
+    raw_valid = np.asarray(maps["valid_mask"], bool) & np.isfinite(np.asarray(maps["A"], float))
+    walls = features["walls"]
+
+    row = {
+        "case_id": case_id,
+        "pipeline_version": PIPELINE_VERSION,
+        "a0_status": "completed",
+        "raw_valid_fraction": float(raw_valid.mean()),
+        "anterior_amplitude": walls[0].get("radial_stretch_activity_amplitude"),
+        "posterior_amplitude": walls[1].get("radial_stretch_activity_amplitude"),
+        "anterior_amplitude_status": walls[0].get("amplitude_status"),
+        "posterior_amplitude_status": walls[1].get("amplitude_status"),
+        "anterior_common_region_duration_s": walls[0].get("common_region_duration_s"),
+        "posterior_common_region_duration_s": walls[1].get("common_region_duration_s"),
+        "anterior_ER_mean_paired": mean_or_none([r.get("anterior_ER") for r in paired]),
+        "posterior_ER_mean_paired": mean_or_none([r.get("posterior_ER") for r in paired]),
+        "anterior_directional_rms_mean": mean_or_none([r.get("directional_rms") for r in ant_windows]),
+        "posterior_directional_rms_mean": mean_or_none([r.get("directional_rms") for r in post_windows]),
+        "record_MSE_time_equal": mse.get("record_MSE_time_equal"),
+        "record_MSE_z": mse.get("record_MSE_z"),
+        "record_mean_bias_sq": mse.get("record_mean_bias_sq"),
+        "record_sd_scale_sq": mse.get("record_sd_scale_sq"),
+        "record_time_shape_term": mse.get("record_time_shape_term"),
+        "mse_status": mse.get("status"),
+        "mse_decomposition_status": mse.get("decomposition_status"),
+        "unique_window_count": mse.get("unique_window_count"),
+        "paired_window_count": mse.get("paired_window_count"),
+        "mean_spatial_columns": mean_cols,
+        "m1_status": m1_status,
+        "m1_failure_reason": m1_reason,
+        "m1_algorithm_version": M1_VERSION,
+        "m1_prop_count_min": count_min,
+        "m1_prop_count_max": count_max,
+        "effective_observation_seconds": (m1_seconds if m1_seconds > 0 else None),
+        "effective_observation_minutes": (m1_seconds / 60.0 if m1_seconds > 0 else None),
+        "m1_prop_rate_min_per_min": rate_min,
+        "m1_prop_rate_max_per_min": rate_max,
+        "m1_other_significant_activity_count": m1.get("other_significant_activity_count") if m1_status == "completed" else None,
+        "ambiguous_cross_wall_prop_pairs": m1.get("ambiguous_cross_wall_propagation_pairs") if m1_status == "completed" else None,
+        "m1_minmax_physical_cutoff": (m1.get("normalization") or {}).get("physical_cutoff") if m1_status == "completed" else None,
+    }
+    save_json(case_dir / "a0_mse_features.json", features)
+    save_json(case_dir / "mse_record.json", mse)
+    save_json(case_dir / "m1_record.json", m1)
+    return row
+
+
+def run_a0_m1_mse(rows: list[dict], output: Path, resume: bool):
+    case_root = output / "cases"
+    case_root.mkdir(parents=True, exist_ok=True)
+    results = []
+    for index, row in enumerate(rows, 1):
+        case_id = text(row.get("case_id"))
+        if not case_id:
+            raise ValueError("Every manifest row needs case_id")
+        folder = case_root / case_id
+        folder.mkdir(parents=True, exist_ok=True)
+        saved = folder / "final_dynamic_row.json"
+        if resume and saved.is_file():
+            results.append(json.loads(saved.read_text(encoding="utf-8")))
+            print(f"[{index}/{len(rows)}] {case_id}: reuse completed row", flush=True)
+            continue
+        print(f"[{index}/{len(rows)}] {case_id}: A0/M1/MSE", flush=True)
+        base = {"case_id": case_id, "pipeline_version": PIPELINE_VERSION}
+        try:
+            maps, meta = run_or_load_a0(row, folder)
+            base.update(meta)
+            base.update(summarize_maps(case_id, maps, folder))
+            base["a0_failure_reason"] = ""
+        except Exception as e:
+            base.update(
+                a0_status="failed",
+                a0_failure_reason=f"{type(e).__name__}: {e}",
+                raw_valid_fraction=None,
+                anterior_amplitude=None,
+                posterior_amplitude=None,
+                anterior_amplitude_status="unavailable_a0_failure",
+                posterior_amplitude_status="unavailable_a0_failure",
+                anterior_ER_mean_paired=None,
+                posterior_ER_mean_paired=None,
+                record_MSE_time_equal=None,
+                record_MSE_z=None,
+                record_mean_bias_sq=None,
+                record_sd_scale_sq=None,
+                record_time_shape_term=None,
+                mse_status="unavailable_a0_failure",
+                mse_decomposition_status="unavailable_a0_failure",
+                m1_status="unavailable_a0_failure",
+                m1_failure_reason="a0_failure",
+                m1_algorithm_version=M1_VERSION,
+                m1_prop_count_min=None,
+                m1_prop_count_max=None,
+                effective_observation_seconds=None,
+                effective_observation_minutes=None,
+                m1_prop_rate_min_per_min=None,
+                m1_prop_rate_max_per_min=None,
+            )
+            (folder / "ERROR.txt").write_text(traceback.format_exc(), encoding="utf-8")
+        save_json(saved, base)
+        results.append(base)
+    return results
+
+
+def write_csv(path: Path, rows: list[dict]):
+    fields = []
+    for row in rows:
+        for key in row:
+            if key not in fields:
+                fields.append(key)
+    with path.open("w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        w.writeheader(); w.writerows(rows)
+
+
+def run_command(
+    cmd: list[str],
+    cwd: Path,
+    log: Path,
+    *,
+    allow_failure: bool = False,
+) -> int:
+    print("RUN:", " ".join(cmd), flush=True)
+    with log.open("w", encoding="utf-8") as out:
+        p = subprocess.run(
+            cmd,
+            cwd=cwd,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    if p.returncode and not allow_failure:
+        raise RuntimeError(f"Command failed ({p.returncode}); see {log}")
+    return int(p.returncode)
+
+
+def run_r2(rows: list[dict], output: Path, workers: int, resume: bool):
+    r2_root = Path(__file__).resolve().parent / "r2_frozen"
+    work = output / "r2"
+    work.mkdir(parents=True, exist_ok=True)
+
+    eligible: list[dict[str, str]] = []
+    unavailable: dict[str, dict[str, str]] = {}
+
+    for row in rows:
+        case = text(row.get("case_id"))
+        video = optional_path(row.get("video"))
+        tr = optional_path(row.get("r2_tracking"))
+        nodes = optional_path(row.get("r2_nodes"))
+        if (
+            video
+            and video.is_file()
+            and tr
+            and tr.is_file()
+            and nodes
+            and nodes.is_file()
+        ):
+            eligible.append(
+                {
+                    "case_id": case,
+                    "video": str(video),
+                    "tracking": str(tr),
+                    "nodes": str(nodes),
+                    "mm_per_processed_pixel": text(
+                        row.get("mm_per_processed_pixel")
+                    ),
+                }
+            )
+        else:
+            unavailable[case] = {
+                "status": "missing_input",
+                "reason": "missing_r2_video_tracking_or_nodes",
+            }
+
+    if not eligible:
+        return {}, unavailable
+
+    all_manifest = work / "r2_manifest_all_candidates.csv"
+    manifest = work / "r2_manifest.csv"
+    write_csv(all_manifest, eligible)
+    write_csv(manifest, eligible)
+
+    validate_report = work / "input_validation.csv"
+    tracking_run = work / "tracking_run"
+    longitudinal = work / "longitudinal_run"
+    reproducibility = work / "reproducibility_run"
+    consensus = work / "medium_consensus_run"
+    frozen_inputs = work / "frozen_model_inputs"
+
+    if not (resume and validate_report.is_file()):
+        run_command(
+            [
+                sys.executable,
+                str(r2_root / "verify_tracking_inputs.py"),
+                "--manifest",
+                str(all_manifest),
+                "--report",
+                str(validate_report),
+            ],
+            r2_root,
+            work / "01_verify.log",
+            allow_failure=True,
+        )
+
+    if not validate_report.is_file():
+        raise RuntimeError("R2 input validation did not produce a report")
+
+    with validate_report.open(
+        "r", encoding="utf-8-sig", newline=""
+    ) as stream:
+        validation_rows = list(csv.DictReader(stream))
+    validation = {
+        text(row.get("case_id")): text(row.get("status"))
+        for row in validation_rows
+    }
+    ready_ids = {
+        case_id for case_id, status in validation.items()
+        if status == "ready"
+    }
+    for row in eligible:
+        case_id = row["case_id"]
+        if case_id not in ready_ids:
+            unavailable[case_id] = {
+                "status": "input_validation_failed",
+                "reason": validation.get(
+                    case_id, "missing_from_input_validation_report"
+                ),
+            }
+
+    eligible = [row for row in eligible if row["case_id"] in ready_ids]
+    write_csv(manifest, eligible)
+    if not eligible:
+        return {}, unavailable
+
+    run_command(
+        [
+            sys.executable,
+            str(r2_root / "run_tracking_batch.py"),
+            "--manifest",
+            str(manifest),
+            "--run-dir",
+            str(tracking_run),
+            "--workers",
+            str(workers),
+        ],
+        r2_root,
+        work / "02_tracking.log",
+    )
+
+    tracking_status_path = tracking_run / "resumable_status.json"
+    if not tracking_status_path.is_file():
+        raise RuntimeError("R2 tracking did not produce resumable_status.json")
+    tracking_status = json.loads(
+        tracking_status_path.read_text(encoding="utf-8")
+    )
+    case_status = tracking_status.get("cases", {})
+    successful_ids = {
+        case_id
+        for case_id, record in case_status.items()
+        if record.get("state") == "complete"
+    }
+    for row in eligible:
+        case_id = row["case_id"]
+        if case_id not in successful_ids:
+            record = case_status.get(case_id, {})
+            unavailable[case_id] = {
+                "status": "failed",
+                "reason": (
+                    "r2_tracking_failed"
+                    f";return_code={record.get('return_code')}"
+                ),
+            }
+
+    if not successful_ids:
+        return {}, unavailable
+
+    if not (
+        resume
+        and (longitudinal / "longitudinal_region_frequency.csv").is_file()
+    ):
+        run_command(
+            [
+                sys.executable,
+                str(r2_root / "extract_longitudinal_frequency.py"),
+                "--source-run",
+                str(tracking_run),
+                "--output",
+                str(longitudinal),
+            ],
+            r2_root,
+            work / "03_longitudinal.log",
+        )
+
+    if not (
+        resume
+        and (
+            reproducibility / "region_reproducibility_details.csv"
+        ).is_file()
+    ):
+        run_command(
+            [
+                sys.executable,
+                str(r2_root / "validate_reproducibility.py"),
+                "--source-run",
+                str(tracking_run),
+                "--longitudinal-run",
+                str(longitudinal),
+                "--output",
+                str(reproducibility),
+            ],
+            r2_root,
+            work / "04_reproducibility.log",
+        )
+
+    if not (
+        resume and (consensus / "medium_consensus_details.csv").is_file()
+    ):
+        run_command(
+            [
+                sys.executable,
+                str(r2_root / "build_medium_consensus.py"),
+                "--source-run",
+                str(tracking_run),
+                "--longitudinal-run",
+                str(longitudinal),
+                "--reproducibility-run",
+                str(reproducibility),
+                "--output",
+                str(consensus),
+            ],
+            r2_root,
+            work / "05_consensus.log",
+        )
+
+    if not (resume and (frozen_inputs / "main.csv").is_file()):
+        if frozen_inputs.exists():
+            shutil.rmtree(frozen_inputs)
+        run_command(
+            [
+                sys.executable,
+                str(r2_root / "prepare_frozen_inputs.py"),
+                "--longitudinal-regions",
+                str(longitudinal / "longitudinal_region_frequency.csv"),
+                "--medium-consensus",
+                str(consensus / "medium_consensus_details.csv"),
+                "--output",
+                str(frozen_inputs),
+            ],
+            r2_root,
+            work / "06_prepare.log",
+        )
+
+    data = pd.read_csv(
+        frozen_inputs / "main.csv",
+        dtype={"case_id": str},
+    )
+    data["case_id"] = data["case_id"].astype(str).str.strip()
+    retain = (
+        data["retained_for_patient_model"]
+        .astype(str)
+        .str.lower()
+        .isin(["true", "1"])
+    )
+    posterior = data.loc[
+        retain & data["wall"].eq("posterior")
+    ].copy()
+    posterior["frequency"] = pd.to_numeric(
+        posterior["optimized_candidate_frequency_cpm"],
+        errors="coerce",
+    )
+    posterior = posterior[np.isfinite(posterior["frequency"])]
+
+    out: dict[str, dict[str, object]] = {}
+    for case, group in posterior.groupby("case_id", sort=False):
+        case_id = str(case)
+        out[case_id] = {
+            "R2_frequency_cpm": float(group["frequency"].mean()),
+            "R2_retained_posterior_region_count": int(len(group)),
+            "R2_status": "completed",
+            "R2_failure_reason": "",
+            "R2_version": R2_VERSION,
+        }
+
+    for case_id in successful_ids:
+        if case_id not in out:
+            out[case_id] = {
+                "R2_frequency_cpm": None,
+                "R2_retained_posterior_region_count": 0,
+                "R2_status": "no_retained_posterior_region",
+                "R2_failure_reason": (
+                    "no_eligible_posterior_region_after_frozen_rules"
+                ),
+                "R2_version": R2_VERSION,
+            }
+
+    return out, unavailable
+
+
+def load_manifest(path: Path):
+    manifest_path = path.resolve()
+    manifest_dir = manifest_path.parent
+    with manifest_path.open(
+        "r", encoding="utf-8-sig", newline=""
+    ) as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        raise ValueError("Manifest is empty")
+
+    ids = []
+    for row in rows:
+        case_id = text(row.get("case_id"))
+        row["case_id"] = case_id
+        ids.append(case_id)
+        for key in MANIFEST_PATH_FIELDS:
+            raw = text(row.get(key))
+            if not raw:
+                continue
+            value = Path(raw)
+            if not value.is_absolute():
+                value = manifest_dir / value
+            row[key] = str(value.resolve())
+
+    if any(not case_id for case_id in ids):
+        raise ValueError("case_id must be nonempty")
+    if len(ids) != len(set(ids)):
+        raise ValueError("case_id must be unique")
+    return rows
+
+
+def main():
+    p = argparse.ArgumentParser(description="Outcome-blind frozen R2 + M1 + MSE batch pipeline")
+    p.add_argument("--manifest", type=Path, required=True)
+    p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--r2-workers", type=int, default=1)
+    p.add_argument("--resume", action="store_true")
+    p.add_argument("--skip-r2", action="store_true")
+    p.add_argument("--skip-a0", action="store_true", help="Only useful when final_dynamic_row.json already exists and --resume is used")
+    args = p.parse_args()
+    if args.r2_workers < 1:
+        p.error("--r2-workers must be >=1")
+    args.output.mkdir(parents=True, exist_ok=True)
+    rows = load_manifest(args.manifest)
+    if args.skip_a0:
+        a0_rows = []
+        for row in rows:
+            saved = args.output / "cases" / text(row["case_id"]) / "final_dynamic_row.json"
+            if not saved.is_file():
+                raise FileNotFoundError(f"--skip-a0 requires existing {saved}")
+            a0_rows.append(json.loads(saved.read_text(encoding="utf-8")))
+    else:
+        a0_rows = run_a0_m1_mse(rows, args.output, args.resume)
+    if args.skip_r2:
+        r2_map, r2_unavailable = {}, {}
+    else:
+        try:
+            r2_map, r2_unavailable = run_r2(
+                rows,
+                args.output,
+                args.r2_workers,
+                args.resume,
+            )
+        except Exception as exc:
+            r2_map = {}
+            r2_unavailable = {
+                text(row["case_id"]): {
+                    "status": "failed",
+                    "reason": f"r2_stage_failed:{type(exc).__name__}:{exc}",
+                }
+                for row in rows
+            }
+            r2_error = args.output / "r2" / "R2_STAGE_ERROR.txt"
+            r2_error.parent.mkdir(parents=True, exist_ok=True)
+            r2_error.write_text(traceback.format_exc(), encoding="utf-8")
+    by_id = {r["case_id"]: dict(r) for r in a0_rows}
+    final = []
+    for src in rows:
+        case = text(src["case_id"])
+        row = by_id.get(case, {"case_id": case, "pipeline_version": PIPELINE_VERSION})
+        if args.skip_r2:
+            row.update(
+                R2_frequency_cpm=None,
+                R2_retained_posterior_region_count=None,
+                R2_status="skipped",
+                R2_failure_reason="skip_r2_requested",
+                R2_version=R2_VERSION,
+            )
+        elif case in r2_map:
+            row.update(r2_map[case])
+        else:
+            unavailable = r2_unavailable.get(
+                case,
+                {
+                    "status": "failed",
+                    "reason": "missing_r2_result",
+                },
+            )
+            row.update(
+                R2_frequency_cpm=None,
+                R2_retained_posterior_region_count=None,
+                R2_status=unavailable["status"],
+                R2_failure_reason=unavailable["reason"],
+                R2_version=R2_VERSION,
+            )
+        final.append(row)
+    table = args.output / "FINAL_DYNAMIC_FEATURES.csv"
+    write_csv(table, final)
+    summary = {
+        "pipeline_version": PIPELINE_VERSION, "outcomes_read": False,
+        "case_count": len(final),
+        "R2_valid": sum(r.get("R2_frequency_cpm") not in (None, "") for r in final),
+        "M1_valid": sum(r.get("m1_prop_rate_min_per_min") not in (None, "") for r in final),
+        "MSE_valid": sum(r.get("record_MSE_time_equal") not in (None, "") for r in final),
+        "missing_values_are_zero": False,
+        "main_dynamic_candidates": ["R2_frequency_cpm", "m1_prop_rate_min_per_min", "record_MSE_time_equal"],
+        "final_table": str(table),
+    }
+    save_json(args.output / "FINAL_RUN_SUMMARY.json", summary)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+if __name__ == "__main__":
+    main()
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/run_final_batch.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/verify_environment.py | git_blob_sha=ade09ea4e2995779e09e3127a37addc4f219ccb6 ================
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+
+TEXT_SUFFIXES = {".py", ".json", ".csv", ".md", ".txt", ".yml", ".yaml"}
+
+
+def canonical_bytes(path: Path) -> bytes:
+    """Hash repository text canonically as LF, independent of Windows CRLF checkout."""
+    data = path.read_bytes()
+    if path.suffix.lower() in TEXT_SUFFIXES:
+        data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return data
+
+
+def git_blob_sha1(path: Path) -> str:
+    data = canonical_bytes(path)
+    return hashlib.sha1(
+        b"blob " + str(len(data)).encode("ascii") + b"\0" + data
+    ).hexdigest()
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(canonical_bytes(path)).hexdigest()
+
+
+def main() -> None:
+    result = {"python": sys.version.split()[0]}
+
+    import numpy
+    import pandas
+    import scipy
+
+    result.update(
+        numpy=numpy.__version__,
+        pandas=pandas.__version__,
+        scipy=scipy.__version__,
+    )
+
+    try:
+        import cv2
+
+        result["opencv"] = cv2.__version__
+        result["cuda_devices"] = int(cv2.cuda.getCudaEnabledDeviceCount())
+        result["cuda_sparse_pyr_lk_available"] = bool(
+            getattr(cv2, "cuda_SparsePyrLKOpticalFlow", None)
+            or getattr(cv2.cuda, "SparsePyrLKOpticalFlow_create", None)
+        )
+    except Exception as exc:
+        result["opencv_error"] = f"{type(exc).__name__}: {exc}"
+
+    try:
+        from analysis.mse_pregnancy_association.code.measurement.tracking import (
+            track_segments,
+        )
+        from analysis.mse_pregnancy_association.code.record_mse_core import (
+            summarize_paired_windows,
+        )
+        from analysis.mse_pregnancy_association.code.batch_wave_counts import (
+            count_map,
+        )
+        from experiments.step2_salience_sandbox.mechanism_2x2.mechanisms import (
+            intervention,
+        )
+
+        # Keep imports live so static linters do not erase their validation role.
+        _ = (track_segments, summarize_paired_windows, count_map, intervention)
+        result["core_imports"] = "ok"
+    except Exception as exc:
+        result["core_imports"] = f"FAILED: {type(exc).__name__}: {exc}"
+
+    runtime_root = Path(__file__).resolve().parent
+    feature_root = runtime_root.parent
+    lock = json.loads(
+        (runtime_root / "SOURCE_LOCK.json").read_text(encoding="utf-8")
+    )
+
+    bad_git = []
+    for rel, expected in lock["git_blob_sha1"].items():
+        # SOURCE_LOCK git paths are relative to frozen_runtime_20261126 itself.
+        path = runtime_root / rel
+        if not path.is_file() or git_blob_sha1(path) != expected:
+            bad_git.append(rel)
+
+    bad_r2 = []
+    for rel, expected in lock["r2_sha256"].items():
+        path = runtime_root / "r2_frozen" / rel
+        if not path.is_file() or sha256(path) != expected:
+            bad_r2.append(rel)
+
+    result["source_lock_git_mismatch"] = bad_git
+    result["source_lock_r2_mismatch"] = bad_r2
+
+    orchestration_lock_path = feature_root / "PIPELINE_ORCHESTRATION_LOCK.json"
+    bad_orchestration = []
+    if orchestration_lock_path.is_file():
+        orchestration = json.loads(
+            orchestration_lock_path.read_text(encoding="utf-8")
+        )
+        repo_root = feature_root.parent
+        for rel, expected in orchestration.get("git_blob_sha1", {}).items():
+            path = repo_root / rel
+            if not path.is_file() or git_blob_sha1(path) != expected:
+                bad_orchestration.append(rel)
+        result["orchestration_lock_present"] = True
+    else:
+        result["orchestration_lock_present"] = False
+        bad_orchestration.append("PIPELINE_ORCHESTRATION_LOCK.json")
+
+    result["orchestration_lock_mismatch"] = bad_orchestration
+
+    r2 = runtime_root / "r2_frozen" / "code" / "verify_cuda_backend.py"
+    result["r2_source_present"] = r2.is_file()
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    bad = (
+        result.get("core_imports") != "ok"
+        or result.get("cuda_devices", 0) < 1
+        or not result.get("cuda_sparse_pyr_lk_available", False)
+        or not r2.is_file()
+        or bool(bad_git)
+        or bool(bad_r2)
+        or bool(bad_orchestration)
+    )
+    raise SystemExit(2 if bad else 0)
+
+
+if __name__ == "__main__":
+    main()
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/verify_environment.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/manifest_template.csv | git_blob_sha=afbdac923869a5c301e50bfbd01f8de6537d4e0e ================
+case_id,video,annotation,pose,time_factor,a0_spacetime_cache,r2_tracking,r2_nodes,mm_per_processed_pixel
+CASE001,D:/study/videos/CASE001.mp4,D:/study/annotations/CASE001.json,D:/study/poses/CASE001.npz,1.0,,D:/study/p3_tracks/CASE001.npz,D:/study/nodes/CASE001.json,
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/manifest_template.csv ================
