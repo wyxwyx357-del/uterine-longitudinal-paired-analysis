@@ -203,23 +203,23 @@ def _load_auto_features(path: Path) -> pd.DataFrame | None:
         print(f"[INFO] Optional auto feature file not found: {path}")
         return None
 
-    auto = pd.read_csv(
-        path,
-        dtype={
-            "case_id": str,
-            "exam_id": str,
-            "检查ID": str,
-            "record_id": str,
-        },
-    )
+    header = pd.read_csv(path, nrows=0)
+    id_columns = {
+        name: str
+        for name in ("case_id", "exam_id", "检查ID", "record_id")
+        if name in header.columns
+    }
+    auto = pd.read_csv(path, dtype=id_columns)
     auto = _rename_known_columns(
         auto,
         cfg.AUTO_COLUMN_ALIASES,
         required={"exam_id"},
     )
 
+    if auto["exam_id"].isna().any():
+        raise ValueError("Dynamic feature table contains missing exam_id values.")
     auto["exam_id"] = auto["exam_id"].astype(str).str.strip()
-    if auto["exam_id"].eq("").any() or auto["exam_id"].isna().any():
+    if auto["exam_id"].eq("").any():
         raise ValueError("Dynamic feature table contains blank exam_id values.")
 
     keep = ["exam_id"] + [
@@ -291,8 +291,10 @@ def main() -> None:
         },
     )
 
+    if clinical["exam_id"].isna().any():
+        raise ValueError("Clinical sheet contains missing exam_id values.")
     clinical["exam_id"] = clinical["exam_id"].astype(str).str.strip()
-    if clinical["exam_id"].eq("").any() or clinical["exam_id"].isna().any():
+    if clinical["exam_id"].eq("").any():
         raise ValueError("Clinical sheet contains blank exam_id values.")
 
     if clinical["exam_id"].duplicated().any():
