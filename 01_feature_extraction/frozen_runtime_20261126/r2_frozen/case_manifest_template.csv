@@ -1,3 +1,3 @@
-<PARSED TEXT FOR SHEET: 1 / 1 TABS
-TAB NAME: case_manifest_template.csv>index,case_id,video,tracking,nodes,mm_per_processed_pixel
-0,CASE001,D:/videos/CASE001.mp4,D:/tracking/CASE001.npz,D:/nodes/CASE001.json,
+case_id,video,tracking,nodes,mm_per_processed_pixel
+CASE001,D:/videos/CASE001.mp4,D:/tracking/CASE001.npz,D:/nodes/CASE001.json,
+

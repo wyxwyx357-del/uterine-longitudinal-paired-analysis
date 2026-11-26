@@ -998,3 +998,77 @@ def main() -> int:
             CODE / "run_local_motion_frequency.py"
         ),
         "trajectory_cache": str(cache_dir.resolve()),
+        "primary_candidate_rule": {
+            "min_duration_s": args.min_duration_s,
+            "min_candidate_cycles": args.min_cycles,
+            "min_periodic_over_quadratic_improvement": args.min_periodic_improvement,
+            "note": "frozen after prespecified mathematical, image-chain, and seed-stability validation",
+        },
+        "fixed_point_segment_rule": {
+            "min_point_fraction": args.min_point_fraction,
+            "minimum_points": 2,
+            "min_first_frame_span_fraction": args.min_span_fraction,
+            "point_set_constant_within_segment": True,
+            "selection_order": "longest duration, then point count, then spatial span",
+            "selection_uses_frequency_or_outcome": False,
+        },
+        "signal_origin_evidence": {
+            "classes": [
+                "local_tissue_motion_supported",
+                "coordinated_tissue_displacement_supported",
+                "artifact_risk",
+                "insufficient_evidence",
+            ],
+            "thresholds": EVIDENCE_THRESHOLDS,
+            "same_segment_and_point_set": True,
+            "uses_clinical_outcome": False,
+        },
+        "boundary_frequency_excluded": False,
+        "missing_frequency_filled_with_zero": False,
+        "patient_summary": "counts only; regional frequencies are not aggregated",
+        "sensitivity_duration_candidates_s": DURATION_CANDIDATES_S,
+        "sensitivity_cycle_candidates": CYCLE_CANDIDATES,
+        "sensitivity_trend_improvement_candidates": TREND_IMPROVEMENT_CANDIDATES,
+        "elapsed_seconds": time.time() - started,
+        "cases_requested": len(case_ids),
+        "cases_complete": sum(v["status"] == "complete" for v in statuses.values()),
+    }
+    (args.out / "optimization_config.json").write_text(
+        json.dumps(configuration, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    evidence_summary = {
+        "regions_total": len(regions),
+        "local_tissue_motion_supported": sum(
+            row.get("evidence_class") == "local_tissue_motion_supported"
+            for row in regions
+        ),
+        "coordinated_tissue_displacement_supported": sum(
+            row.get("evidence_class") == "coordinated_tissue_displacement_supported"
+            for row in regions
+        ),
+        "artifact_risk": sum(
+            row.get("evidence_class") == "artifact_risk" for row in regions
+        ),
+        "insufficient_evidence": sum(
+            row.get("evidence_class") == "insufficient_evidence"
+            for row in regions
+        ),
+        "background_same_frequency_flags": sum(
+            bool(row.get("background_same_frequency_flag")) for row in regions
+        ),
+        "brightness_same_frequency_flags": sum(
+            bool(row.get("brightness_same_frequency_flag")) for row in regions
+        ),
+        "tracking_inconsistency_flags": sum(
+            bool(row.get("tracking_artifact_flag")) for row in regions
+        ),
+        "interpretation": "technical signal-origin evidence; not physiological ground truth",
+    }
+    (args.out / "signal_origin_summary.json").write_text(
+        json.dumps(evidence_summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return 0 if all(v["status"] == "complete" for v in statuses.values()) else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
