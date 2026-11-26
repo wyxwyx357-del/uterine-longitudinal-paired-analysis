@@ -43,10 +43,18 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
-    regions = pd.read_csv(args.longitudinal_regions)
-    consensus = pd.read_csv(args.medium_consensus)[
+    regions = pd.read_csv(
+        args.longitudinal_regions,
+        dtype={"case_id": str},
+    )
+    consensus = pd.read_csv(
+        args.medium_consensus,
+        dtype={"case_id": str},
+    )[
         KEYS + ["consensus_frequency_cpm", "validated_stable_medium"]
     ]
+    regions["case_id"] = regions["case_id"].astype(str).str.strip()
+    consensus["case_id"] = consensus["case_id"].astype(str).str.strip()
     data = regions.merge(consensus, on=KEYS, how="left", validate="one_to_one")
     summary = {
         "clinical_outcome_read": False,
