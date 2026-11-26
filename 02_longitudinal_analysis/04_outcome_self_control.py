@@ -13,7 +13,10 @@ def _load_analysis_data() -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError("Run 01_build_master_table.py first.")
 
-    df = pd.read_csv(path)
+    df = pd.read_csv(
+        path,
+        dtype={"exam_id": str, "patient_id": str},
+    )
     df = df.loc[cfg.cohort_mask(df)].copy()
     df["clinical_pregnancy"] = pd.to_numeric(
         df["clinical_pregnancy"],
