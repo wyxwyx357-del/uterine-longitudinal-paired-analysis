@@ -23,9 +23,19 @@ m1-global-pairing-unseen-v1
 
 ## Locks
 
+- `../PIPELINE_ORCHESTRATION_LOCK.json`
 - `SOURCE_LOCK.json`
 - `FINAL_PIPELINE_SPEC.json`
 - `r2_frozen/FROZEN_SPEC.json`
+
+Engineering revision:
+
+```text
+20261126_gemini_audit_fix1
+```
+
+This revision changes orchestration safeguards only; the locked measurement
+definitions and thresholds are unchanged.
 
 These define the current bundled workflow. They do not claim recovery of all
 historical requested R2 SHA256 values.
@@ -83,3 +93,12 @@ The workflow does not synthesize missing R2 inputs.
 ## Missing values
 
 Measurement failure remains missing. Zero is not used as a generic failure value.
+
+
+## Engineering safeguards
+
+- case_id is preserved as a string across R2 CSV stages;
+- relative manifest paths are resolved against the manifest directory;
+- invalid/failed R2 cases are isolated and remain NaN with status/reason;
+- successful R2 cases continue and still produce FINAL_DYNAMIC_FEATURES.csv;
+- source hashes use canonical LF text hashing; .gitattributes also enforces LF.
