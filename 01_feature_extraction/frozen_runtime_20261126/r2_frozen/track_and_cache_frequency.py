@@ -84,7 +84,7 @@ def save_cache(
     temporary = path.with_suffix(path.suffix + ".tmp")
     with temporary.open("wb") as stream:
         np.savez_compressed(
-                stream,
+            stream,
             time_s=tracked["time_s"],
             initial_points=initial,
             anterior_axes=anterior_axes,
