@@ -1,0 +1,2615 @@
+GEMINI FINAL FIX3 PATCH AUDIT
+Repository: wyxwyx357-del/uterine-longitudinal-paired-analysis
+Branch: main
+HEAD at export: 959a01463b34b1a9e1a7f50d6fff3cbac7e05d64
+
+This bundle contains only the files changed for FIX3 after Gemini's final completion audit.
+No A0/Amplitude/ER/MSE/M1/R2 measurement mathematics, thresholds, frequency grid, retention rule, or final aggregation were changed.
+Text between file markers is copied from current GitHub main.
+
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/r2_frozen/run_tracking_batch.py | git_blob_sha=57f228af108c07ecf91b0be7b700ae838ffd1709 ================
+#!/usr/bin/env python3
+"""Checkpointed parallel runner for frozen tissue-frequency V1."""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import os
+import subprocess
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent
+NATIVE_TABLES = (
+    "case_status.csv",
+    "optimized_region_frequency.csv",
+    "optimized_patient_frequency.csv",
+    "signal_origin_evidence.csv",
+)
+REQUIRED_MANIFEST_COLUMNS = {
+    "case_id", "video", "tracking", "nodes", "mm_per_processed_pixel",
+}
+
+
+def read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        reader = csv.DictReader(stream)
+        return list(reader.fieldnames or []), list(reader)
+
+
+def write_csv(path: Path, fields: list[str], rows: list[dict[str, str]]) -> None:
+    with path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def complete_output(path: Path) -> bool:
+    if not all((path / table).is_file() for table in NATIVE_TABLES):
+        return False
+    try:
+        _, rows = read_csv(path / "case_status.csv")
+    except (OSError, csv.Error):
+        return False
+    return bool(
+        len(rows) == 1
+        and rows[0].get("status") == "complete"
+    )
+
+
+def atomic_status(path: Path, payload: dict) -> None:
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument("--workers", type=int, default=6)
+    args = parser.parse_args()
+    if args.workers < 1:
+        raise ValueError("workers must be positive")
+
+    manifest_fields, manifest_rows = read_csv(args.manifest)
+    missing_columns = REQUIRED_MANIFEST_COLUMNS - set(manifest_fields)
+    if missing_columns:
+        raise ValueError(f"Manifest missing columns: {sorted(missing_columns)}")
+    if not manifest_rows:
+        raise ValueError("Manifest contains no patients")
+    case_ids = [row["case_id"].strip() for row in manifest_rows]
+    if any(not case_id for case_id in case_ids):
+        raise ValueError("Every manifest row must have a non-empty case_id")
+    if len(set(case_ids)) != len(case_ids):
+        raise ValueError("Manifest contains duplicate case_id values")
+    for row, case_id in zip(manifest_rows, case_ids):
+        row["case_id"] = case_id
+    args.run_dir.mkdir(parents=True, exist_ok=True)
+    cases_root = args.run_dir / "cases"
+    cases_root.mkdir(exist_ok=True)
+    status_path = args.run_dir / "resumable_status.json"
+    merged_dir = args.run_dir / "merged_results"
+    if merged_dir.exists():
+        if status_path.is_file():
+            previous = json.loads(status_path.read_text(encoding="utf-8"))
+            same_cases = set(previous.get("cases", {})) == {
+                row["case_id"] for row in manifest_rows
+            }
+            same_manifest_rows = True
+            for index, row in enumerate(manifest_rows, start=1):
+                own_manifest = cases_root / f"case_{index:03d}" / "manifest.csv"
+                if not own_manifest.is_file():
+                    same_manifest_rows = False
+                    break
+                own_fields, own_rows = read_csv(own_manifest)
+                if own_fields != manifest_fields or own_rows != [row]:
+                    same_manifest_rows = False
+                    break
+            merged_complete = all((merged_dir / table).is_file() for table in NATIVE_TABLES)
+            if (
+                previous.get("state") in {"complete", "partial_complete"}
+                and same_cases and same_manifest_rows and merged_complete
+            ):
+                print(f"already complete or partial-complete: {merged_dir}", flush=True)
+                return 0
+        raise FileExistsError(f"Existing merged directory is incomplete or mismatched: {merged_dir}")
+    lock = threading.Lock()
+    case_order = {row["case_id"]: index for index, row in enumerate(manifest_rows)}
+    outputs: dict[str, str] = {}
+    records: dict[str, dict] = {}
+
+    for index, row in enumerate(manifest_rows, start=1):
+        case_root = cases_root / f"case_{index:03d}"
+        case_root.mkdir(exist_ok=True)
+        own_manifest = case_root / "manifest.csv"
+        if not own_manifest.exists():
+            write_csv(own_manifest, manifest_fields, [row])
+        else:
+            own_fields, own_rows = read_csv(own_manifest)
+            if own_fields != manifest_fields or own_rows != [row]:
+                raise ValueError(
+                    f"Manifest row changed for {row['case_id']}; use a new run directory"
+                )
+        attempts = sorted(path for path in case_root.glob("attempt_*") if path.is_dir())
+        completed = next((path for path in reversed(attempts) if complete_output(path)), None)
+        cache_file = case_root / "trajectory_cache" / f"{row['case_id']}.npz"
+        if completed is not None and not cache_file.is_file():
+            completed = None
+        if completed is not None:
+            outputs[row["case_id"]] = str(completed)
+        records[row["case_id"]] = {
+            "index": index,
+            "state": "complete" if completed else "pending",
+            "output": str(completed) if completed else None,
+            "return_code": 0 if completed else None,
+        }
+
+    status = {
+        "started_or_resumed_at": datetime.now().astimezone().isoformat(),
+        "state": "running",
+        "workers": args.workers,
+        "total_cases": len(manifest_rows),
+        "completed_cases": len(outputs),
+        "remaining_cases": len(manifest_rows) - len(outputs),
+        "cases": records,
+    }
+    atomic_status(status_path, status)
+    env = os.environ.copy()
+    env["MPLCONFIGDIR"] = str(args.run_dir / "matplotlib_cache")
+
+    def run_case(index: int, row: dict[str, str]) -> tuple[str, int, str]:
+        case_id = row["case_id"]
+        case_root = cases_root / f"case_{index:03d}"
+        own_manifest = case_root / "manifest.csv"
+        attempt_number = len([path for path in case_root.glob("attempt_*") if path.is_dir()]) + 1
+        output = case_root / f"attempt_{attempt_number:03d}"
+        stdout_path = case_root / f"attempt_{attempt_number:03d}.stdout.log"
+        stderr_path = case_root / f"attempt_{attempt_number:03d}.stderr.log"
+        with lock:
+            records[case_id].update(state="running", output=str(output))
+            atomic_status(status_path, status)
+        cache_dir = case_root / "trajectory_cache"
+        command = [
+            sys.executable, str(ROOT / "track_and_cache_frequency.py"),
+            "--case-manifest", str(own_manifest), "--out", str(output),
+            "--cache-dir", str(cache_dir), "--reuse-cache",
+        ]
+        with stdout_path.open("w", encoding="utf-8") as stdout_stream, \
+                stderr_path.open("w", encoding="utf-8") as stderr_stream:
+            result = subprocess.run(
+                command, cwd=ROOT, env=env,
+                stdout=stdout_stream, stderr=stderr_stream, check=False,
+            )
+        return case_id, result.returncode, str(output)
+
+    pending = [
+        (index, row) for index, row in enumerate(manifest_rows, start=1)
+        if row["case_id"] not in outputs
+    ]
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = [executor.submit(run_case, index, row) for index, row in pending]
+        for future in as_completed(futures):
+            case_id, return_code, output = future.result()
+            valid = complete_output(Path(output))
+            with lock:
+                records[case_id].update(
+                    state="complete" if valid else "failed",
+                    output=output,
+                    return_code=return_code,
+                )
+                if valid:
+                    outputs[case_id] = output
+                status["completed_cases"] = len(outputs)
+                status["remaining_cases"] = len(manifest_rows) - len(outputs)
+                atomic_status(status_path, status)
+
+    failed_case_ids = [
+        case_id for case_id, record in records.items()
+        if record.get("state") != "complete"
+    ]
+    if not outputs:
+        status.update(
+            state="failed",
+            finished_at=datetime.now().astimezone().isoformat(),
+            failed_cases=len(failed_case_ids),
+            remaining_cases=0,
+        )
+        atomic_status(status_path, status)
+        return 2
+
+    merged_dir.mkdir()
+    failed_rows = [
+        {
+            "case_id": case_id,
+            "state": records[case_id].get("state"),
+            "return_code": records[case_id].get("return_code"),
+            "output": records[case_id].get("output"),
+        }
+        for case_id in failed_case_ids
+    ]
+    write_csv(
+        merged_dir / "failed_cases.csv",
+        ["case_id", "state", "return_code", "output"],
+        failed_rows,
+    )
+
+    for table in NATIVE_TABLES:
+        fields: list[str] = []
+        combined: list[dict[str, str]] = []
+        for row in manifest_rows:
+            case_id = row["case_id"]
+            if case_id not in outputs:
+                continue
+            own_fields, own_rows = read_csv(Path(outputs[case_id]) / table)
+            for field in own_fields:
+                if field not in fields:
+                    fields.append(field)
+            combined.extend(own_rows)
+        combined.sort(key=lambda item: case_order.get(item.get("case_id", ""), len(case_order)))
+        write_csv(merged_dir / table, fields, combined)
+
+    _, region_rows = read_csv(merged_dir / "optimized_region_frequency.csv")
+    confidence_counts: dict[str, int] = {}
+    for row in region_rows:
+        key = row.get("technical_confidence", "")
+        confidence_counts[key] = confidence_counts.get(key, 0) + 1
+    cohort_summary = {
+        "frozen_rule_version": "R2_TISSUE_FREQUENCY_V1_20261105",
+        "clinical_outcome_read": False,
+        "requested_patients": len(manifest_rows),
+        "patients": len(outputs),
+        "failed_patients": len(failed_case_ids),
+        "regions": len(region_rows),
+        "technical_confidence_counts": confidence_counts,
+        "retained_regions": sum(
+            row.get("retained_for_patient_model", "").lower() == "true"
+            for row in region_rows),
+        "frequency_aggregation": "none",
+    }
+    (merged_dir / "正式汇总规则与计数.json").write_text(
+        json.dumps(cohort_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Convenient Chinese aliases; the native English tables remain canonical.
+    write_csv(
+        merged_dir / "区域级组织位移频率.csv",
+        list(read_csv(merged_dir / "optimized_region_frequency.csv")[0]),
+        region_rows,
+    )
+    patient_fields, patient_rows = read_csv(
+        merged_dir / "optimized_patient_frequency.csv")
+    write_csv(merged_dir / "患者级技术汇总.csv", patient_fields, patient_rows)
+    status.update(
+        state="complete" if not failed_case_ids else "partial_complete",
+        finished_at=datetime.now().astimezone().isoformat(),
+        merged_results=str(merged_dir),
+        summary_return_code=0,
+        completed_cases=len(outputs),
+        failed_cases=len(failed_case_ids),
+        remaining_cases=0,
+        frozen_rule_version="R2_TISSUE_FREQUENCY_V1_20261105",
+    )
+    atomic_status(status_path, status)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/r2_frozen/run_tracking_batch.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/r2_frozen/track_and_cache_frequency.py | git_blob_sha=cf621fe4f770e387918329642cafbe0e2ca51fa8 ================
+#!/usr/bin/env python3
+"""Frozen outcome-blind local-tissue displacement frequency pipeline (V1).
+
+The original R2 tracker and primary frequency fit remain unchanged.  This
+frozen layer adds fixed-point support, technical usability, paired deformation,
+and signal-origin evidence rules validated before full-cohort outcome analysis.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import itertools
+import json
+import math
+import os
+import statistics
+import sys
+import tempfile
+import time
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+
+
+ROOT = Path(__file__).resolve().parent
+CODE = ROOT / "code"
+os.environ.setdefault(
+    "MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "r2_tracking_matplotlib")
+)
+sys.path.insert(0, str(CODE))
+
+import run_local_motion_frequency as frozen  # noqa: E402
+import run_real_context_evidence as base  # noqa: E402
+
+
+DURATION_CANDIDATES_S = (10.0, 15.0, 20.0)
+CYCLE_CANDIDATES = (0.0, 1.0, 1.5)
+TREND_IMPROVEMENT_CANDIDATES = (0.0, 0.05, 0.10)
+CACHE_FORMAT_VERSION = 1
+EVIDENCE_THRESHOLDS = {
+    "control_fixed_frequency_score": 0.50,
+    "control_periodic_correlation": 0.70,
+    "background_to_tissue_range_ratio": 0.50,
+    "minimum_point_phase_coherence": 0.50,
+    "supported_point_phase_coherence": 0.70,
+    "minimum_point_participation_fraction": 2.0 / 3.0,
+    "minimum_mean_ncc": 0.80,
+    "maximum_p90_forward_backward_px": 0.60,
+}
+
+
+def write_csv(path: Path, rows: list[dict], fallback: list[str]) -> None:
+    fields: list[str] = []
+    for row in rows:
+        for field in row:
+            if field not in fields:
+                fields.append(field)
+    fields = fields or fallback
+    with path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def save_cache(
+    path: Path,
+    tracked: dict,
+    initial: np.ndarray,
+    anterior_axes: np.ndarray,
+    posterior_axes: np.ndarray,
+    metadata: dict,
+) -> None:
+    """Save everything needed to change region/frequency rules without video I/O."""
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("wb") as stream:
+        np.savez_compressed(
+            stream,
+            time_s=tracked["time_s"],
+            initial_points=initial,
+            anterior_axes=anterior_axes,
+            posterior_axes=posterior_axes,
+            positions=tracked["positions"],
+            raw_positions=tracked["raw_positions"],
+            corrected=tracked["corrected"],
+            target_valid=tracked["valid"],
+            raw_target_valid=tracked["raw_valid"],
+            pose_valid=tracked["pose_valid"],
+            epoch=tracked["epoch"],
+            poses=tracked["poses"],
+            target_ncc=tracked["target_ncc"],
+            target_fb=tracked["target_fb"],
+            point_brightness=tracked["point_brightness"],
+            global_brightness=tracked["global_brightness"],
+            heldout_raw=tracked["heldout_raw"],
+            heldout_corrected=tracked["heldout_corrected"],
+            training_inliers=tracked["training_inliers"],
+            heldout_count=tracked["heldout_count"],
+            cache_format_version=np.asarray([CACHE_FORMAT_VERSION], dtype=np.int32),
+            case_id=np.asarray([metadata["case_id"]]),
+            video_path=np.asarray([metadata["video_path"]]),
+            video_size=np.asarray([metadata["video_size"]], dtype=np.int64),
+            video_mtime_ns=np.asarray([metadata["video_mtime_ns"]], dtype=np.int64),
+            tracking_sha256=np.asarray([metadata["tracking_sha256"]]),
+            nodes_sha256=np.asarray([metadata["nodes_sha256"]]),
+        )
+    os.replace(temporary, path)
+
+
+def load_cache(
+    path: Path, expected: dict | None = None
+) -> tuple[dict, np.ndarray, np.ndarray, np.ndarray]:
+    with np.load(path, allow_pickle=False) as archive:
+        if expected is not None:
+            actual = {
+                "cache_format_version": int(archive["cache_format_version"][0]),
+                "case_id": str(archive["case_id"][0]),
+                "video_path": str(archive["video_path"][0]),
+                "video_size": int(archive["video_size"][0]),
+                "video_mtime_ns": int(archive["video_mtime_ns"][0]),
+                "tracking_sha256": str(archive["tracking_sha256"][0]),
+                "nodes_sha256": str(archive["nodes_sha256"][0]),
+            }
+            wanted = {"cache_format_version": CACHE_FORMAT_VERSION, **expected}
+            differences = [
+                key for key, value in wanted.items() if actual.get(key) != value
+            ]
+            if differences:
+                raise ValueError(
+                    "Trajectory cache input mismatch: " + ", ".join(differences)
+                )
+        tracked = {
+            "time_s": archive["time_s"],
+            "positions": archive["positions"],
+            "raw_positions": archive["raw_positions"],
+            "corrected": archive["corrected"],
+            "valid": archive["target_valid"],
+            "raw_valid": archive["raw_target_valid"],
+            "pose_valid": archive["pose_valid"],
+            "epoch": archive["epoch"],
+            "poses": archive["poses"],
+            "target_ncc": archive["target_ncc"],
+            "target_fb": archive["target_fb"],
+            "point_brightness": archive["point_brightness"],
+            "global_brightness": archive["global_brightness"],
+            "heldout_raw": archive["heldout_raw"],
+            "heldout_corrected": archive["heldout_corrected"],
+            "training_inliers": archive["training_inliers"],
+            "heldout_count": archive["heldout_count"],
+        }
+        return (
+            tracked,
+            archive["initial_points"],
+            archive["anterior_axes"],
+            archive["posterior_axes"],
+        )
+
+
+def subset_coverage(points: np.ndarray, chosen: tuple[int, ...]) -> float:
+    """Euclidean span retained from the first-frame regional point set."""
+    def diameter(values: np.ndarray) -> float:
+        if len(values) < 2:
+            return 0.0
+        delta = values[:, None, :] - values[None, :, :]
+        return float(np.sqrt((delta * delta).sum(axis=2)).max())
+
+    full = diameter(points)
+    if full <= 1e-12:
+        return 1.0
+    return diameter(points[list(chosen)]) / full
+
+
+def choose_fixed_point_segment(
+    tracked: dict,
+    initial: np.ndarray,
+    columns: np.ndarray,
+    min_point_fraction: float,
+    min_span_fraction: float,
+) -> dict | None:
+    """Choose one unchanged point set and one continuous epoch-contained segment."""
+    number = len(columns)
+    minimum = max(2, int(math.ceil(number * min_point_fraction)))
+    best: dict | None = None
+    for size in range(minimum, number + 1):
+        for local_choice in itertools.combinations(range(number), size):
+            coverage = subset_coverage(initial[columns], local_choice)
+            if coverage + 1e-12 < min_span_fraction:
+                continue
+            selected = columns[list(local_choice)]
+            valid = (
+                tracked["pose_valid"]
+                & tracked["valid"][:, selected].all(axis=1)
+                & np.isfinite(tracked["corrected"][:, selected]).all(axis=(1, 2))
+            )
+            for start, stop in base.contiguous_runs(valid, tracked["epoch"]):
+                duration = float(
+                    tracked["time_s"][stop - 1] - tracked["time_s"][start]
+                )
+                candidate = {
+                    "start": start,
+                    "stop": stop,
+                    "columns": selected,
+                    "local_choice": local_choice,
+                    "duration_s": duration,
+                    "point_count": size,
+                    "point_fraction": size / number,
+                    "span_fraction": coverage,
+                }
+                key = (duration, size, coverage, -start)
+                if best is None or key > best["key"]:
+                    candidate["key"] = key
+                    best = candidate
+    if best is not None:
+        best.pop("key")
+    return best
+
+
+def periodic_trend_comparison(
+    time_s: np.ndarray, signal: np.ndarray, frequency_cpm: float
+) -> dict:
+    """Compare the frozen periodic model with an explicit quadratic slow trend."""
+    tt = np.asarray(time_s, float) - float(np.mean(time_s))
+    y = np.asarray(signal, float)
+    quadratic = np.column_stack((np.ones(len(tt)), tt, tt * tt))
+    phase = 2.0 * np.pi * tt * frequency_cpm / 60.0
+    periodic = np.column_stack(
+        (np.ones(len(tt)), tt, np.sin(phase), np.cos(phase))
+    )
+    quadratic_residual = y - quadratic @ np.linalg.lstsq(quadratic, y, rcond=None)[0]
+    periodic_residual = y - periodic @ np.linalg.lstsq(periodic, y, rcond=None)[0]
+    quadratic_sse = float(quadratic_residual @ quadratic_residual)
+    periodic_sse = float(periodic_residual @ periodic_residual)
+    improvement = (
+        (quadratic_sse - periodic_sse) / quadratic_sse
+        if quadratic_sse > 1e-12 else math.nan
+    )
+    return {
+        "quadratic_trend_sse": quadratic_sse,
+        "periodic_model_sse": periodic_sse,
+        "periodic_over_quadratic_improvement": improvement,
+    }
+
+
+def fit_candidate(time_s: np.ndarray, signal: np.ndarray) -> dict:
+    fit = frozen.fit_unified_frequency(time_s, signal)
+    if fit.get("status") != "valid":
+        return fit
+    comparison = periodic_trend_comparison(
+        time_s, signal, float(fit["dominant_frequency_cpm"])
+    )
+    return {**fit, **comparison}
+
+
+def usability(
+    fit: dict,
+    duration_s: float,
+    min_duration_s: float,
+    min_cycles: float,
+    min_periodic_improvement: float,
+) -> tuple[bool, str]:
+    reasons: list[str] = []
+    if fit.get("status") != "valid":
+        reasons.append(str(fit.get("reason", "candidate_frequency_missing")))
+    else:
+        if duration_s + 1e-12 < min_duration_s:
+            reasons.append("continuous_duration_below_rule")
+        if float(fit.get("observed_cycles", 0.0)) + 1e-12 < min_cycles:
+            reasons.append("candidate_cycle_coverage_below_rule")
+        improvement = fit.get("periodic_over_quadratic_improvement", math.nan)
+        if not np.isfinite(improvement) or improvement < min_periodic_improvement:
+            reasons.append("periodic_model_not_better_than_quadratic_trend")
+    return not reasons, "pass" if not reasons else ";".join(reasons)
+
+
+def projected_signal(
+    tracked: dict,
+    initial: np.ndarray,
+    axes: np.ndarray,
+    columns: np.ndarray,
+    start: int,
+    stop: int,
+) -> np.ndarray:
+    displacement = tracked["corrected"][start:stop, columns] - initial[columns]
+    point_signal = np.einsum("tki,ki->tk", displacement, axes[columns])
+    return point_signal.mean(axis=1)
+
+
+def safe_correlation(a: np.ndarray, b: np.ndarray) -> float:
+    valid = np.isfinite(a) & np.isfinite(b)
+    if valid.sum() < 20 or np.std(a[valid]) < 1e-12 or np.std(b[valid]) < 1e-12:
+        return math.nan
+    return float(np.corrcoef(a[valid], b[valid])[0, 1])
+
+
+def fixed_frequency_component(
+    time_s: np.ndarray, signal: np.ndarray, frequency_cpm: float
+) -> dict:
+    """Measure one nominated frequency by joint trend-plus-sinusoid regression."""
+    time_s = np.asarray(time_s, float)
+    signal = np.asarray(signal, float)
+    valid = np.isfinite(time_s) & np.isfinite(signal)
+    if valid.sum() < 20:
+        return {"score": math.nan, "amplitude": math.nan}
+    tt = time_s[valid] - float(np.mean(time_s[valid]))
+    y = signal[valid]
+    trend = np.column_stack((np.ones(len(tt)), tt))
+    trend_fitted = trend @ np.linalg.lstsq(trend, y, rcond=None)[0]
+    residual = y - trend_fitted
+    energy = float(residual @ residual)
+    if energy <= 1e-12:
+        return {"score": math.nan, "amplitude": 0.0}
+    phase = 2.0 * np.pi * tt * frequency_cpm / 60.0
+    waves = np.column_stack((np.sin(phase), np.cos(phase)))
+    full_design = np.column_stack((trend, waves))
+    full_coefficients = np.linalg.lstsq(full_design, y, rcond=None)[0]
+    coefficients = full_coefficients[-2:]
+    periodic_valid = waves @ coefficients
+    full_residual = y - full_design @ full_coefficients
+    score = float(np.clip(1.0 - (full_residual @ full_residual) / energy, 0, 1))
+    # Preserve original frame alignment.  Different control channels can have
+    # different missing frames; compressing each independently makes a later
+    # correlation compare the wrong frames or fail on unequal lengths.
+    residual = np.full(len(signal), np.nan, float)
+    periodic = np.full(len(signal), np.nan, float)
+    residual[valid] = y - trend_fitted
+    periodic[valid] = periodic_valid
+    return {
+        "score": score,
+        "amplitude": float(np.linalg.norm(coefficients)),
+        "residual": residual,
+        "periodic": periodic,
+        "valid": valid,
+        "coefficient": complex(float(coefficients[0]), float(coefficients[1])),
+    }
+
+
+def background_signal(
+    tracked: dict,
+    initial: np.ndarray,
+    axes: np.ndarray,
+    columns: np.ndarray,
+    start: int,
+    stop: int,
+) -> np.ndarray:
+    values = np.full(stop - start, np.nan, float)
+    for output_index, frame in enumerate(range(start, stop)):
+        if not tracked["pose_valid"][frame]:
+            continue
+        inverse = np.linalg.inv(tracked["poses"][frame])
+        mapped = initial[columns] @ inverse[:2, :2].T + inverse[:2, 2]
+        displacement = mapped - initial[columns]
+        values[output_index] = np.einsum(
+            "ki,ki->k", displacement, axes[columns]
+        ).mean()
+    return values
+
+
+def artifact_evidence(
+    tracked: dict,
+    initial: np.ndarray,
+    axes: np.ndarray,
+    selected: dict | None,
+    fit: dict,
+    usable: bool,
+    deformation_supported: bool,
+) -> dict:
+    """Describe signal origin using controls from the identical point set and segment."""
+    if selected is None or fit.get("status") != "valid":
+        return {
+            "evidence_class": "insufficient_evidence",
+            "evidence_reason": "optimized_frequency_or_segment_missing",
+        }
+    start, stop = selected["start"], selected["stop"]
+    columns = selected["columns"]
+    time_s = tracked["time_s"][start:stop]
+    frequency = float(fit["dominant_frequency_cpm"])
+    displacement = tracked["corrected"][start:stop, columns] - initial[columns]
+    point_signals = np.einsum("tki,ki->tk", displacement, axes[columns])
+    tissue = point_signals.mean(axis=1)
+    background = background_signal(
+        tracked, initial, axes, columns, start, stop
+    )
+    local_brightness = np.nanmean(
+        tracked["point_brightness"][start:stop, columns], axis=1
+    )
+    global_brightness = tracked["global_brightness"][start:stop]
+
+    tissue_frequency = fixed_frequency_component(time_s, tissue, frequency)
+    background_frequency = fixed_frequency_component(time_s, background, frequency)
+    local_brightness_frequency = fixed_frequency_component(
+        time_s, local_brightness, frequency
+    )
+    global_brightness_frequency = fixed_frequency_component(
+        time_s, global_brightness, frequency
+    )
+
+    def periodic_corr(control: dict) -> float:
+        if "periodic" not in tissue_frequency or "periodic" not in control:
+            return math.nan
+        return safe_correlation(tissue_frequency["periodic"], control["periodic"])
+
+    point_components = [
+        fixed_frequency_component(time_s, point_signals[:, index], frequency)
+        for index in range(point_signals.shape[1])
+    ]
+    # Keep participation and phase agreement as separate quantities.  The
+    # normalized inverse-participation ratio is 1/n when one of n points owns
+    # all same-frequency amplitude, and 1 when all points contribute equally.
+    coefficients = np.asarray([
+        item.get("coefficient", complex(0.0, 0.0))
+        if np.isfinite(abs(item.get("coefficient", complex(math.nan, math.nan))))
+        else complex(0.0, 0.0)
+        for item in point_components
+    ], complex)
+    amplitudes = np.abs(coefficients)
+    amplitude_sum = float(amplitudes.sum())
+    amplitude_square_sum = float(amplitudes @ amplitudes)
+    point_participation_fraction = (
+        amplitude_sum ** 2 / (len(point_components) * amplitude_square_sum)
+        if amplitude_square_sum > 1e-24 else 0.0
+    )
+    point_phase_coherence = (
+        float(abs(coefficients.sum()) / amplitude_sum)
+        if amplitude_sum > 1e-12 else math.nan
+    )
+    tissue_range = float(np.ptp(tissue))
+    background_range = float(np.ptp(background[np.isfinite(background)])) if np.isfinite(background).any() else math.nan
+    background_ratio = (
+        background_range / tissue_range if tissue_range > 1e-12 else math.nan
+    )
+    ncc = tracked["target_ncc"][start:stop, columns]
+    fb = tracked["target_fb"][start:stop, columns]
+    mean_ncc = float(np.nanmean(ncc)) if np.isfinite(ncc).any() else math.nan
+    p90_fb = float(np.nanpercentile(fb, 90)) if np.isfinite(fb).any() else math.nan
+    heldout = tracked["heldout_corrected"][start:stop]
+    mean_heldout = (
+        float(np.nanmean(heldout)) if np.isfinite(heldout).any() else math.nan
+    )
+
+    background_periodic_corr = periodic_corr(background_frequency)
+    local_brightness_periodic_corr = periodic_corr(local_brightness_frequency)
+    global_brightness_periodic_corr = periodic_corr(global_brightness_frequency)
+    thresholds = EVIDENCE_THRESHOLDS
+    background_flag = bool(
+        np.isfinite(background_ratio)
+        and background_ratio >= thresholds["background_to_tissue_range_ratio"]
+        and background_frequency.get("score", math.nan)
+        >= thresholds["control_fixed_frequency_score"]
+        and abs(background_periodic_corr)
+        >= thresholds["control_periodic_correlation"]
+    )
+    brightness_flag = bool(
+        global_brightness_frequency.get("score", math.nan)
+        >= thresholds["control_fixed_frequency_score"]
+        and abs(global_brightness_periodic_corr)
+        >= thresholds["control_periodic_correlation"]
+    )
+    tracking_flag = bool(
+        point_participation_fraction < thresholds["minimum_point_participation_fraction"]
+        or (np.isfinite(point_phase_coherence)
+         and point_phase_coherence < thresholds["minimum_point_phase_coherence"])
+        or (np.isfinite(mean_ncc) and mean_ncc < thresholds["minimum_mean_ncc"])
+        or (np.isfinite(p90_fb)
+            and p90_fb > thresholds["maximum_p90_forward_backward_px"])
+    )
+    artifact_reasons = []
+    if tracking_flag:
+        artifact_reasons.append("tracking_or_point_inconsistency")
+    if artifact_reasons:
+        evidence_class = "artifact_risk"
+        evidence_reason = ";".join(artifact_reasons)
+    elif background_flag and not deformation_supported:
+        # A small periodic registration residual can remain after otherwise
+        # successful rigid correction.  Without independent paired-wall
+        # deformation, same-frequency background and local translation are not
+        # identifiable, so do not retain the value as medium-confidence motion.
+        evidence_class = "insufficient_evidence"
+        evidence_reason = "background_same_frequency_without_deformation_support"
+    elif (
+        usable
+        and point_participation_fraction >= thresholds["minimum_point_participation_fraction"]
+        and np.isfinite(point_phase_coherence)
+        and point_phase_coherence >= thresholds["supported_point_phase_coherence"]
+    ):
+        if deformation_supported:
+            evidence_class = "local_tissue_motion_supported"
+            evidence_reason = "usable_frequency;coherent_points;paired_deformation_support"
+        else:
+            evidence_class = "coordinated_tissue_displacement_supported"
+            evidence_reason = "usable_frequency;participating_coherent_points;deformation_type_unresolved"
+    else:
+        evidence_class = "insufficient_evidence"
+        evidence_reason = "local_deformation_support_incomplete"
+    confounding_reasons = []
+    if background_flag:
+        confounding_reasons.append("background_same_frequency")
+    if brightness_flag:
+        confounding_reasons.append("global_brightness_same_frequency")
+    return {
+        "evidence_class": evidence_class,
+        "evidence_reason": evidence_reason,
+        "background_same_frequency_flag": background_flag,
+        "brightness_same_frequency_flag": brightness_flag,
+        "tracking_artifact_flag": tracking_flag,
+        "same_frequency_confounding_flag": bool(confounding_reasons),
+        "same_frequency_confounding_reason": ";".join(confounding_reasons),
+        "tissue_fixed_frequency_score": tissue_frequency.get("score", ""),
+        "background_fixed_frequency_score": background_frequency.get("score", ""),
+        "background_periodic_correlation": background_periodic_corr,
+        "background_to_tissue_range_ratio_same_segment": background_ratio,
+        "local_brightness_fixed_frequency_score": local_brightness_frequency.get("score", ""),
+        "local_brightness_periodic_correlation": local_brightness_periodic_corr,
+        "global_brightness_fixed_frequency_score": global_brightness_frequency.get("score", ""),
+        "global_brightness_periodic_correlation": global_brightness_periodic_corr,
+        "point_phase_coherence": point_phase_coherence,
+        "point_participation_fraction": point_participation_fraction,
+        "mean_target_ncc_same_segment": mean_ncc,
+        "p90_target_fb_px_same_segment": p90_fb,
+        "mean_background_heldout_residual_px_same_segment": mean_heldout,
+    }
+
+
+def paired_deformation_support(
+    tracked: dict,
+    initial: np.ndarray,
+    axes: np.ndarray,
+    local_indices: np.ndarray,
+    count: int,
+    wall: str,
+    selected: dict | None,
+) -> dict:
+    """Use the same selected anatomical pairs and the same continuous segment."""
+    if selected is None:
+        return {
+            "status": "missing",
+            "reason": "optimized_fixed_point_segment_missing",
+        }
+    chosen_local = local_indices[list(selected["local_choice"])]
+    anterior = chosen_local
+    posterior = chosen_local + count
+    current = anterior if wall == "anterior" else posterior
+    common_valid = (
+        tracked["pose_valid"]
+        & tracked["valid"][:, anterior].all(axis=1)
+        & tracked["valid"][:, posterior].all(axis=1)
+        & np.isfinite(tracked["corrected"][:, anterior]).all(axis=(1, 2))
+        & np.isfinite(tracked["corrected"][:, posterior]).all(axis=(1, 2))
+    )
+    runs = base.contiguous_runs(common_valid, tracked["epoch"])
+    if not runs:
+        return {"status": "missing", "reason": "no_paired_common_valid_segment"}
+    start, stop = max(
+        runs,
+        key=lambda run: tracked["time_s"][run[1] - 1] - tracked["time_s"][run[0]],
+    )
+    time_s = tracked["time_s"][start:stop]
+    displacement = projected_signal(
+        tracked, initial, axes, current, start, stop
+    )
+    initial_distance = np.linalg.norm(
+        initial[posterior] - initial[anterior], axis=1
+    )
+    current_distance = np.linalg.norm(
+        tracked["corrected"][start:stop, posterior]
+        - tracked["corrected"][start:stop, anterior],
+        axis=2,
+    )
+    strain = (current_distance / initial_distance[None] - 1.0).mean(axis=1)
+    displacement_fit = fit_candidate(time_s, displacement)
+    strain_fit = fit_candidate(time_s, strain)
+    strain_range = float(np.ptp(strain))
+    difference = (
+        abs(
+            float(displacement_fit["dominant_frequency_cpm"])
+            - float(strain_fit["dominant_frequency_cpm"])
+        )
+        if displacement_fit.get("status") == strain_fit.get("status") == "valid"
+        else math.nan
+    )
+    supported = bool(
+        displacement_fit.get("status") == strain_fit.get("status") == "valid"
+        and strain_range >= frozen.STRAIN_RANGE_THRESHOLD
+        and difference <= frozen.FREQUENCY_TOLERANCE_CPM
+    )
+    reasons: list[str] = []
+    if displacement_fit.get("status") != "valid":
+        reasons.append("support_displacement_frequency_missing")
+    if strain_fit.get("status") != "valid":
+        reasons.append("paired_strain_frequency_missing")
+    if strain_range < frozen.STRAIN_RANGE_THRESHOLD:
+        reasons.append("strain_range_below_frozen_threshold")
+    if np.isfinite(difference) and difference > frozen.FREQUENCY_TOLERANCE_CPM:
+        reasons.append("frequency_difference_above_frozen_tolerance")
+    return {
+        "status": "valid",
+        "reason": "pass" if supported else ";".join(reasons),
+        "supported": supported,
+        "duration_s": float(time_s[-1] - time_s[0]),
+        "displacement_frequency_cpm": displacement_fit.get(
+            "dominant_frequency_cpm", ""
+        ),
+        "strain_frequency_cpm": strain_fit.get("dominant_frequency_cpm", ""),
+        "strain_range": strain_range,
+        "frequency_difference_cpm": difference if np.isfinite(difference) else "",
+        "paired_local_point_indices": ";".join(str(i) for i in chosen_local),
+    }
+
+
+def analyse_cache(
+    case_id: str,
+    cache_path: Path,
+    args: argparse.Namespace,
+    cache_identity: dict,
+) -> list[dict]:
+    tracked, initial, anterior_axes, posterior_axes = load_cache(
+        cache_path, cache_identity
+    )
+    axes = np.vstack((anterior_axes, posterior_axes))
+    count = len(anterior_axes)
+    regions = dict(zip(base.frozen.REGION_NAMES, np.array_split(np.arange(count), 3)))
+    rows: list[dict] = []
+    for wall, offset in (("anterior", 0), ("posterior", count)):
+        for region, local_indices in regions.items():
+            columns = local_indices + offset
+            arrays = base.region_arrays(tracked, initial, axes, local_indices, columns)
+            original_valid = arrays["region_valid"] & np.isfinite(arrays["corrected_mean"])
+            original_runs = base.contiguous_runs(original_valid, tracked["epoch"])
+            original_segment = None
+            if original_runs:
+                start, stop = max(
+                    original_runs,
+                    key=lambda run: tracked["time_s"][run[1] - 1]
+                    - tracked["time_s"][run[0]],
+                )
+                original_duration = float(
+                    tracked["time_s"][stop - 1] - tracked["time_s"][start]
+                )
+                original_fit = fit_candidate(
+                    tracked["time_s"][start:stop], arrays["corrected_mean"][start:stop]
+                )
+                original_segment = (start, stop)
+            else:
+                original_duration = 0.0
+                original_fit = {
+                    "status": "missing",
+                    "reason": "no_continuous_technical_valid_segment",
+                }
+
+            selected = choose_fixed_point_segment(
+                tracked,
+                initial,
+                columns,
+                args.min_point_fraction,
+                args.min_span_fraction,
+            )
+            if selected is None:
+                optimized_duration = 0.0
+                optimized_fit = {
+                    "status": "missing",
+                    "reason": "no_fixed_point_segment_with_required_coverage",
+                }
+            else:
+                start, stop = selected["start"], selected["stop"]
+                optimized_duration = selected["duration_s"]
+                optimized_signal = projected_signal(
+                    tracked,
+                    initial,
+                    axes,
+                    selected["columns"],
+                    start,
+                    stop,
+                )
+                optimized_fit = fit_candidate(
+                    tracked["time_s"][start:stop], optimized_signal
+                )
+
+            usable, reason = usability(
+                optimized_fit,
+                optimized_duration,
+                args.min_duration_s,
+                args.min_cycles,
+                args.min_periodic_improvement,
+            )
+            deformation = paired_deformation_support(
+                tracked,
+                initial,
+                axes,
+                local_indices,
+                count,
+                wall,
+                selected,
+            )
+            evidence = artifact_evidence(
+                tracked,
+                initial,
+                axes,
+                selected,
+                optimized_fit,
+                usable,
+                bool(deformation.get("supported", False)),
+            )
+            row = {
+                "case_id": case_id,
+                "wall": wall,
+                "region": region,
+                "actual_video_duration_s": float(tracked["time_s"][-1]),
+                "original_candidate_status": original_fit.get("status", "missing"),
+                "original_candidate_reason": original_fit.get("reason", ""),
+                "original_candidate_frequency_cpm": original_fit.get(
+                    "dominant_frequency_cpm", ""
+                ),
+                "original_segment_duration_s": original_duration,
+                "original_observed_cycles": original_fit.get("observed_cycles", ""),
+                "original_boundary_hit": original_fit.get("search_boundary", ""),
+                "optimized_candidate_status": optimized_fit.get("status", "missing"),
+                "optimized_candidate_reason": optimized_fit.get("reason", ""),
+                "optimized_candidate_frequency_cpm": optimized_fit.get(
+                    "dominant_frequency_cpm", ""
+                ),
+                "optimized_segment_duration_s": optimized_duration,
+                "optimized_observed_cycles": optimized_fit.get("observed_cycles", ""),
+                "optimized_boundary_hit": optimized_fit.get("search_boundary", ""),
+                "optimized_score": optimized_fit.get("score", ""),
+                "quadratic_trend_sse": optimized_fit.get("quadratic_trend_sse", ""),
+                "periodic_model_sse": optimized_fit.get("periodic_model_sse", ""),
+                "periodic_over_quadratic_improvement": optimized_fit.get(
+                    "periodic_over_quadratic_improvement", ""
+                ),
+                "frequency_usable": usable,
+                "frequency_reason": reason,
+                "optimized_deformation_support_evaluable": (
+                    deformation.get("status") == "valid"
+                ),
+                "optimized_deformation_supported": deformation.get("supported", False),
+                "optimized_deformation_support_reason": deformation.get("reason", ""),
+                "optimized_support_common_duration_s": deformation.get("duration_s", ""),
+                "optimized_support_displacement_frequency_cpm": deformation.get(
+                    "displacement_frequency_cpm", ""
+                ),
+                "optimized_paired_strain_frequency_cpm": deformation.get(
+                    "strain_frequency_cpm", ""
+                ),
+                "optimized_paired_strain_range": deformation.get("strain_range", ""),
+                "optimized_displacement_strain_frequency_difference_cpm": (
+                    deformation.get("frequency_difference_cpm", "")
+                ),
+                **evidence,
+                "technical_confidence": (
+                    "high"
+                    if evidence.get("evidence_class") == "local_tissue_motion_supported"
+                    else "medium"
+                    if evidence.get("evidence_class") == "coordinated_tissue_displacement_supported"
+                    else "excluded"
+                ),
+                "retained_for_patient_model": evidence.get("evidence_class") in {
+                    "local_tissue_motion_supported",
+                    "coordinated_tissue_displacement_supported",
+                },
+                "selected_point_count": selected["point_count"] if selected else 0,
+                "original_region_point_count": len(columns),
+                "selected_point_fraction": selected["point_fraction"] if selected else "",
+                "selected_span_fraction": selected["span_fraction"] if selected else "",
+                "selected_local_point_indices": (
+                    ";".join(str(i) for i in selected["local_choice"])
+                    if selected else ""
+                ),
+                "selected_start_frame": selected["start"] if selected else "",
+                "selected_stop_frame_exclusive": selected["stop"] if selected else "",
+                "original_start_frame": original_segment[0] if original_segment else "",
+                "original_stop_frame_exclusive": original_segment[1] if original_segment else "",
+            }
+            rows.append(row)
+    return rows
+
+
+def patient_rows(case_ids: list[str], regions: list[dict], status: dict[str, dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for row in regions:
+        grouped[row["case_id"]].append(row)
+    output: list[dict] = []
+    for case_id in case_ids:
+        own = grouped[case_id]
+        original = [row for row in own if row["original_candidate_status"] == "valid"]
+        optimized = [row for row in own if row["frequency_usable"]]
+        retained = [row for row in own if row.get("retained_for_patient_model")]
+        durations = [
+            float(row["optimized_segment_duration_s"])
+            for row in own
+            if row["frequency_usable"]
+        ]
+        output.append({
+            "case_id": case_id,
+            "processing_status": status[case_id]["status"],
+            "processing_reason": status[case_id]["reason"],
+            "original_candidate_region_count": len(original),
+            "optimized_usable_region_count": len(optimized),
+            "retained_region_count": len(retained),
+            "retained_anterior_region_count": sum(
+                row["wall"] == "anterior" for row in retained),
+            "retained_posterior_region_count": sum(
+                row["wall"] == "posterior" for row in retained),
+            "optimized_usable_duration_median_s": (
+                statistics.median(durations) if durations else ""
+            ),
+            "optimized_boundary_region_count": sum(
+                bool(row["optimized_boundary_hit"])
+                for row in own if row["frequency_usable"]
+            ),
+            "optimized_support_insufficient_region_count": sum(
+                not bool(row["frequency_usable"]) for row in own
+            ),
+            "optimized_deformation_supported_region_count": sum(
+                bool(row["optimized_deformation_supported"]) for row in own
+            ),
+            "local_tissue_motion_supported_region_count": sum(
+                row.get("evidence_class") == "local_tissue_motion_supported"
+                for row in own
+            ),
+            "coordinated_tissue_displacement_supported_region_count": sum(
+                row.get("evidence_class") == "coordinated_tissue_displacement_supported"
+                for row in own
+            ),
+            "artifact_risk_region_count": sum(
+                row.get("evidence_class") == "artifact_risk" for row in own
+            ),
+            "insufficient_evidence_region_count": sum(
+                row.get("evidence_class") == "insufficient_evidence" for row in own
+            ),
+        })
+    return output
+
+
+def sensitivity_rows(regions: list[dict]) -> list[dict]:
+    rows: list[dict] = []
+    case_count = len({row["case_id"] for row in regions})
+    for duration, cycles, improvement in itertools.product(
+        DURATION_CANDIDATES_S,
+        CYCLE_CANDIDATES,
+        TREND_IMPROVEMENT_CANDIDATES,
+    ):
+        usable = []
+        by_case: dict[str, int] = defaultdict(int)
+        for row in regions:
+            fit = {
+                "status": row["optimized_candidate_status"],
+                "reason": row["optimized_candidate_reason"],
+                "observed_cycles": row["optimized_observed_cycles"],
+                "periodic_over_quadratic_improvement": row[
+                    "periodic_over_quadratic_improvement"
+                ],
+            }
+            ok, _ = usability(
+                fit,
+                float(row["optimized_segment_duration_s"]),
+                duration,
+                cycles,
+                improvement,
+            )
+            if ok:
+                usable.append(row)
+                by_case[row["case_id"]] += 1
+        rows.append({
+            "min_duration_s": duration,
+            "min_candidate_cycles": cycles,
+            "min_periodic_over_quadratic_improvement": improvement,
+            "usable_region_count": len(usable),
+            "patients_with_at_least_1_usable_region": sum(v >= 1 for v in by_case.values()),
+            "patients_with_at_least_2_usable_regions": sum(v >= 2 for v in by_case.values()),
+            "patients_total": case_count,
+        })
+    return rows
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Frozen V1 outcome-blind R2 local-tissue displacement frequency"
+    )
+    parser.add_argument("--case-manifest", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--cache-dir", type=Path)
+    parser.add_argument("--reuse-cache", action="store_true")
+    parser.add_argument("--min-duration-s", type=float, default=15.0)
+    parser.add_argument("--min-cycles", type=float, default=1.0)
+    parser.add_argument("--min-periodic-improvement", type=float, default=0.05)
+    parser.add_argument("--min-point-fraction", type=float, default=2.0 / 3.0)
+    parser.add_argument("--min-span-fraction", type=float, default=2.0 / 3.0)
+    args = parser.parse_args()
+    for name in ("min_point_fraction", "min_span_fraction"):
+        value = getattr(args, name)
+        if not 0 < value <= 1:
+            raise ValueError(f"--{name.replace('_', '-')} must be in (0, 1]")
+    if args.min_duration_s < 0 or args.min_cycles < 0:
+        raise ValueError("Duration and cycle thresholds must be non-negative")
+    if args.out.exists():
+        raise FileExistsError(f"Refusing to overwrite: {args.out}")
+    args.out.mkdir(parents=True)
+    cache_dir = args.cache_dir or (args.out / "trajectory_cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest = frozen.read_case_manifest(args.case_manifest)
+    case_ids = [row["case_id"] for row in manifest]
+    statuses: dict[str, dict] = {}
+    regions: list[dict] = []
+    started = time.time()
+    for source in manifest:
+        case_id = source["case_id"]
+        cache_path = cache_dir / f"{case_id}.npz"
+        try:
+            prepared = frozen.prepare_case(source)
+            video_stat = source["video"].stat()
+            cache_identity = {
+                "case_id": case_id,
+                "video_path": str(source["video"].resolve()),
+                "video_size": int(video_stat.st_size),
+                "video_mtime_ns": int(video_stat.st_mtime_ns),
+                "tracking_sha256": sha256(source["tracking"]),
+                "nodes_sha256": sha256(source["nodes"]),
+            }
+            if not (args.reuse_cache and cache_path.is_file()):
+                if cache_path.exists():
+                    raise FileExistsError(
+                        f"Cache exists; use --reuse-cache or a new cache directory: {cache_path}"
+                    )
+                tracked, initial, anterior_axes, posterior_axes = base.track_real_case(
+                    prepared, float(prepared["available_s"])
+                )
+                save_cache(
+                    cache_path,
+                    tracked,
+                    initial,
+                    anterior_axes,
+                    posterior_axes,
+                    cache_identity,
+                )
+            own = analyse_cache(case_id, cache_path, args, cache_identity)
+            regions.extend(own)
+            statuses[case_id] = {"status": "complete", "reason": ""}
+            print(case_id, "complete", flush=True)
+        except Exception as exc:
+            statuses[case_id] = {
+                "status": "failed",
+                "reason": f"{type(exc).__name__}:{exc}",
+            }
+            print(case_id, "failed", type(exc).__name__, str(exc), flush=True)
+
+    patients = patient_rows(case_ids, regions, statuses)
+    sensitivity = sensitivity_rows(regions)
+    status_rows = [
+        {"case_id": case_id, **statuses[case_id]} for case_id in case_ids
+    ]
+    write_csv(args.out / "optimized_region_frequency.csv", regions, ["case_id"])
+    write_csv(args.out / "optimized_patient_frequency.csv", patients, ["case_id"])
+    evidence_fields = [
+        "case_id", "wall", "region", "optimized_candidate_frequency_cpm",
+        "frequency_usable", "evidence_class", "evidence_reason",
+        "technical_confidence", "retained_for_patient_model",
+        "background_same_frequency_flag", "brightness_same_frequency_flag",
+        "tracking_artifact_flag", "same_frequency_confounding_flag",
+        "same_frequency_confounding_reason", "background_fixed_frequency_score",
+        "background_periodic_correlation",
+        "background_to_tissue_range_ratio_same_segment",
+        "global_brightness_fixed_frequency_score",
+        "global_brightness_periodic_correlation", "point_phase_coherence",
+        "point_participation_fraction",
+        "optimized_deformation_supported", "optimized_paired_strain_range",
+        "optimized_displacement_strain_frequency_difference_cpm",
+        "mean_target_ncc_same_segment", "p90_target_fb_px_same_segment",
+        "mean_background_heldout_residual_px_same_segment",
+    ]
+    evidence_rows = [
+        {field: row.get(field, "") for field in evidence_fields}
+        for row in regions
+    ]
+    write_csv(
+        args.out / "signal_origin_evidence.csv", evidence_rows, evidence_fields
+    )
+    write_csv(args.out / "usability_sensitivity_matrix.csv", sensitivity, ["min_duration_s"])
+    write_csv(args.out / "case_status.csv", status_rows, ["case_id", "status", "reason"])
+
+    configuration = {
+        "analysis": "frozen V1 outcome-blind local-tissue displacement frequency",
+        "frozen_rule_version": "R2_TISSUE_FREQUENCY_V1_20261105",
+        "frozen_pipeline_modified": False,
+        "clinical_outcome_read": False,
+        "input_manifest": str(args.case_manifest.resolve()),
+        "input_manifest_sha256": sha256(args.case_manifest),
+        "optimizer_sha256": sha256(Path(__file__)),
+        "frozen_tracker_sha256": sha256(CODE / "run_real_context_evidence.py"),
+        "frozen_frequency_runner_sha256": sha256(
+            CODE / "run_local_motion_frequency.py"
+        ),
+        "trajectory_cache": str(cache_dir.resolve()),
+        "primary_candidate_rule": {
+            "min_duration_s": args.min_duration_s,
+            "min_candidate_cycles": args.min_cycles,
+            "min_periodic_over_quadratic_improvement": args.min_periodic_improvement,
+            "note": "frozen after prespecified mathematical, image-chain, and seed-stability validation",
+        },
+        "fixed_point_segment_rule": {
+            "min_point_fraction": args.min_point_fraction,
+            "minimum_points": 2,
+            "min_first_frame_span_fraction": args.min_span_fraction,
+            "point_set_constant_within_segment": True,
+            "selection_order": "longest duration, then point count, then spatial span",
+            "selection_uses_frequency_or_outcome": False,
+        },
+        "signal_origin_evidence": {
+            "classes": [
+                "local_tissue_motion_supported",
+                "coordinated_tissue_displacement_supported",
+                "artifact_risk",
+                "insufficient_evidence",
+            ],
+            "thresholds": EVIDENCE_THRESHOLDS,
+            "same_segment_and_point_set": True,
+            "uses_clinical_outcome": False,
+        },
+        "boundary_frequency_excluded": False,
+        "missing_frequency_filled_with_zero": False,
+        "patient_summary": "counts only; regional frequencies are not aggregated",
+        "sensitivity_duration_candidates_s": DURATION_CANDIDATES_S,
+        "sensitivity_cycle_candidates": CYCLE_CANDIDATES,
+        "sensitivity_trend_improvement_candidates": TREND_IMPROVEMENT_CANDIDATES,
+        "elapsed_seconds": time.time() - started,
+        "cases_requested": len(case_ids),
+        "cases_complete": sum(v["status"] == "complete" for v in statuses.values()),
+    }
+    (args.out / "optimization_config.json").write_text(
+        json.dumps(configuration, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    evidence_summary = {
+        "regions_total": len(regions),
+        "local_tissue_motion_supported": sum(
+            row.get("evidence_class") == "local_tissue_motion_supported"
+            for row in regions
+        ),
+        "coordinated_tissue_displacement_supported": sum(
+            row.get("evidence_class") == "coordinated_tissue_displacement_supported"
+            for row in regions
+        ),
+        "artifact_risk": sum(
+            row.get("evidence_class") == "artifact_risk" for row in regions
+        ),
+        "insufficient_evidence": sum(
+            row.get("evidence_class") == "insufficient_evidence"
+            for row in regions
+        ),
+        "background_same_frequency_flags": sum(
+            bool(row.get("background_same_frequency_flag")) for row in regions
+        ),
+        "brightness_same_frequency_flags": sum(
+            bool(row.get("brightness_same_frequency_flag")) for row in regions
+        ),
+        "tracking_inconsistency_flags": sum(
+            bool(row.get("tracking_artifact_flag")) for row in regions
+        ),
+        "interpretation": "technical signal-origin evidence; not physiological ground truth",
+    }
+    (args.out / "signal_origin_summary.json").write_text(
+        json.dumps(evidence_summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return 0 if all(v["status"] == "complete" for v in statuses.values()) else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/r2_frozen/track_and_cache_frequency.py ================
+
+================ BEGIN FILE: 02_longitudinal_analysis/02_delta_and_qc.py | git_blob_sha=09955cfef7672c5bc626e1e1723c0962279ca46b ================
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.stats import spearmanr
+
+import config as cfg
+
+
+def _load_analysis_data() -> pd.DataFrame:
+    path = cfg.TABLES / "master_long.csv"
+    if not path.exists():
+        raise FileNotFoundError("Run 01_build_master_table.py first.")
+
+    df = pd.read_csv(
+        path,
+        dtype={"exam_id": str, "patient_id": str},
+    )
+    mask = cfg.cohort_mask(df)
+    df = df.loc[mask].copy()
+
+    if df.empty:
+        raise ValueError(f"No rows available for cohort={cfg.ANALYSIS_COHORT}")
+
+    df["exam_datetime"] = pd.to_datetime(df["exam_datetime"], errors="coerce")
+    return df.sort_values(["patient_id", "exam_order", "exam_datetime"])
+
+
+def _numeric_present(df: pd.DataFrame) -> list[str]:
+    wanted = cfg.ALL_CONTINUOUS_COLS + cfg.QC_NUMERIC_COLS
+    present = []
+    for col in dict.fromkeys(wanted):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+            present.append(col)
+    return present
+
+
+def build_adjacent_deltas(
+    df: pd.DataFrame,
+    numeric_cols: list[str],
+) -> pd.DataFrame:
+    records = []
+
+    for patient_id, g in df.groupby("patient_id", sort=False):
+        g = g.sort_values(["exam_order", "exam_datetime", "exam_id"]).reset_index(drop=True)
+        if len(g) < 2:
+            continue
+
+        for i in range(1, len(g)):
+            prev = g.iloc[i - 1]
+            curr = g.iloc[i]
+            row = {
+                "patient_id": patient_id,
+                "from_exam_id": prev["exam_id"],
+                "to_exam_id": curr["exam_id"],
+                "from_exam_order": prev["exam_order"],
+                "to_exam_order": curr["exam_order"],
+                "from_exam_datetime": prev.get("exam_datetime"),
+                "to_exam_datetime": curr.get("exam_datetime"),
+            }
+
+            if pd.notna(prev.get("exam_datetime")) and pd.notna(curr.get("exam_datetime")):
+                row["interval_days"] = (
+                    curr["exam_datetime"] - prev["exam_datetime"]
+                ).total_seconds() / 86400.0
+            else:
+                row["interval_days"] = np.nan
+
+            for col in numeric_cols:
+                a = prev.get(col, np.nan)
+                b = curr.get(col, np.nan)
+                row[f"{col}__from"] = a
+                row[f"{col}__to"] = b
+                row[f"{col}__delta"] = (
+                    b - a if pd.notna(a) and pd.notna(b) else np.nan
+                )
+
+            records.append(row)
+
+    return pd.DataFrame.from_records(records)
+
+
+def summarize_deltas(
+    changes: pd.DataFrame,
+    analysis_cols: list[str],
+) -> pd.DataFrame:
+    rows = []
+
+    for col in analysis_cols:
+        dcol = f"{col}__delta"
+        if dcol not in changes.columns:
+            continue
+
+        use = changes[["patient_id", dcol]].dropna().copy()
+        if use.empty:
+            continue
+
+        s = use[dcol]
+        unchanged = np.isclose(s, 0.0, atol=cfg.ZERO_TOL, rtol=0.0)
+        rows.append(
+            {
+                "feature": col,
+                "interval_n": int(len(use)),
+                "patient_n": int(use["patient_id"].nunique()),
+                "median_delta": float(s.median()),
+                "q1_delta": float(s.quantile(0.25)),
+                "q3_delta": float(s.quantile(0.75)),
+                "median_abs_delta": float(s.abs().median()),
+                "increase_interval_n": int((s > cfg.ZERO_TOL).sum()),
+                "decrease_interval_n": int((s < -cfg.ZERO_TOL).sum()),
+                "unchanged_interval_n": int(unchanged.sum()),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def summarize_patient_median_direction(
+    changes: pd.DataFrame,
+    analysis_cols: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    patient_rows = []
+    summary_rows = []
+
+    for col in analysis_cols:
+        dcol = f"{col}__delta"
+        if dcol not in changes.columns:
+            continue
+
+        use = changes[["patient_id", dcol]].dropna().copy()
+        if use.empty:
+            continue
+
+        med = use.groupby("patient_id")[dcol].median()
+        for patient_id, value in med.items():
+            patient_rows.append(
+                {
+                    "patient_id": patient_id,
+                    "feature": col,
+                    "patient_median_adjacent_delta": value,
+                }
+            )
+
+        summary_rows.append(
+            {
+                "feature": col,
+                "patient_n": int(len(med)),
+                "patients_positive_median_delta": int((med > cfg.ZERO_TOL).sum()),
+                "patients_negative_median_delta": int((med < -cfg.ZERO_TOL).sum()),
+                "patients_zero_median_delta": int(
+                    np.isclose(
+                        med,
+                        0.0,
+                        atol=cfg.ZERO_TOL,
+                        rtol=0.0,
+                    ).sum()
+                ),
+            }
+        )
+
+    return pd.DataFrame(patient_rows), pd.DataFrame(summary_rows)
+
+
+def qc_delta_associations(changes: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    auto_features = cfg.AUTO_PRIMARY + cfg.AUTO_EXPLORATORY
+    qc_features = list(dict.fromkeys(cfg.QC_NUMERIC_COLS))
+
+    for feature in auto_features:
+        fx = f"{feature}__delta"
+        if fx not in changes.columns:
+            continue
+
+        for qc in qc_features:
+            qx = f"{qc}__delta"
+            if qx not in changes.columns:
+                continue
+
+            sub = changes[["patient_id", fx, qx]].dropna()
+            if len(sub) < 3:
+                continue
+            if sub[fx].nunique() < 2 or sub[qx].nunique() < 2:
+                rho = np.nan
+            else:
+                rho = float(spearmanr(sub[fx], sub[qx]).statistic)
+
+            rows.append(
+                {
+                    "dynamic_feature": feature,
+                    "qc_feature": qc,
+                    "interval_n": int(len(sub)),
+                    "patient_n": int(sub["patient_id"].nunique()),
+                    "spearman_rho_descriptive": rho,
+                    "note": "Descriptive only; repeated intervals within a patient are not independent.",
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def plot_trajectories(df: pd.DataFrame, features: list[str]) -> None:
+    outdir = cfg.FIGURES / f"02_{cfg.ANALYSIS_COHORT}_trajectories"
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    for feature in features:
+        if feature not in df.columns:
+            continue
+
+        use = df[["patient_id", "exam_order", feature]].copy()
+        use[feature] = pd.to_numeric(use[feature], errors="coerce")
+        use = use.dropna(subset=[feature])
+        if use.empty:
+            continue
+
+        fig, ax = plt.subplots(figsize=(7, 5))
+        for _, g in use.groupby("patient_id"):
+            g = g.sort_values("exam_order")
+            ax.plot(
+                g["exam_order"],
+                g[feature],
+                marker="o",
+                linewidth=1,
+                alpha=0.55,
+            )
+
+        ax.set_xlabel("Within-patient examination order")
+        ax.set_ylabel(feature)
+        ax.set_title(
+            f"{feature}: within-patient trajectories "
+            f"({cfg.ANALYSIS_COHORT} cohort)"
+        )
+        ax.grid(alpha=0.2)
+        fig.tight_layout()
+        fig.savefig(outdir / f"{feature}.png", dpi=180)
+        plt.close(fig)
+
+
+def main() -> None:
+    cfg.ensure_output_dirs()
+    df = _load_analysis_data()
+    numeric_cols = _numeric_present(df)
+
+    changes = build_adjacent_deltas(df, numeric_cols)
+    changes.to_csv(
+        cfg.TABLES / f"adjacent_deltas_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    analysis_cols = [
+        c for c in cfg.ALL_CONTINUOUS_COLS if c in df.columns
+    ]
+    delta_summary = summarize_deltas(changes, analysis_cols)
+    delta_summary.to_csv(
+        cfg.TABLES / f"delta_summary_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    patient_detail, patient_direction = summarize_patient_median_direction(
+        changes,
+        analysis_cols,
+    )
+    patient_detail.to_csv(
+        cfg.TABLES / f"patient_median_delta_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+    patient_direction.to_csv(
+        cfg.TABLES / f"patient_direction_summary_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    qc_assoc = qc_delta_associations(changes)
+    qc_assoc.to_csv(
+        cfg.TABLES / f"delta_qc_associations_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    plot_trajectories(
+        df,
+        [
+            c for c in (
+                cfg.PRIMARY_ANALYSIS_COLS
+                + cfg.EXPLORATORY_ANALYSIS_COLS
+            )
+            if c in df.columns
+        ],
+    )
+
+    print(f"cohort={cfg.ANALYSIS_COHORT}")
+    print(f"patients={df['patient_id'].nunique()}, exams={len(df)}")
+    print(f"adjacent intervals={len(changes)}")
+    print(delta_summary.to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()
+================ END FILE: 02_longitudinal_analysis/02_delta_and_qc.py ================
+
+================ BEGIN FILE: 02_longitudinal_analysis/03_module_comovement.py | git_blob_sha=5e43881b2dad69a69d5f49de1863c31345f3effb ================
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import pingouin as pg
+
+import config as cfg
+
+
+def _load_analysis_data() -> pd.DataFrame:
+    path = cfg.TABLES / "master_long.csv"
+    if not path.exists():
+        raise FileNotFoundError("Run 01_build_master_table.py first.")
+
+    df = pd.read_csv(
+        path,
+        dtype={"exam_id": str, "patient_id": str},
+    )
+    df = df.loc[cfg.cohort_mask(df)].copy()
+    if df.empty:
+        raise ValueError(f"No rows available for cohort={cfg.ANALYSIS_COHORT}")
+
+    df["exam_datetime"] = pd.to_datetime(df["exam_datetime"], errors="coerce")
+    for col in cfg.ALL_CONTINUOUS_COLS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "days_to_transfer" in df.columns:
+        df["days_to_transfer"] = pd.to_numeric(
+            df["days_to_transfer"],
+            errors="coerce",
+        )
+    return df.sort_values(["patient_id", "exam_order"])
+
+
+def run_rm_corr(df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+
+    for x, y in cfg.KEY_PAIRS:
+        if x not in df.columns or y not in df.columns:
+            rows.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "status": "missing_column",
+                }
+            )
+            continue
+
+        sub = df[["patient_id", x, y]].dropna().copy()
+        counts = sub.groupby("patient_id").size()
+        valid_ids = counts[counts >= 2].index
+        sub = sub[sub["patient_id"].isin(valid_ids)].copy()
+
+        n_patients = sub["patient_id"].nunique()
+        n_exams = len(sub)
+
+        if (
+            n_patients < cfg.MIN_RMCORR_PATIENTS
+            or sub[x].nunique() < 2
+            or sub[y].nunique() < 2
+        ):
+            rows.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "status": "insufficient_variation_or_patients",
+                    "n_patients": int(n_patients),
+                    "n_exams": int(n_exams),
+                }
+            )
+            continue
+
+        try:
+            result = pg.rm_corr(
+                data=sub,
+                x=x,
+                y=y,
+                subject="patient_id",
+            )
+            r = float(result["r"].iloc[0])
+            pval = float(result["pval"].iloc[0])
+            dof = float(result["dof"].iloc[0])
+            ci = result["CI95%"].iloc[0] if "CI95%" in result.columns else np.nan
+
+            rows.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "status": "ok",
+                    "n_patients": int(n_patients),
+                    "n_exams": int(n_exams),
+                    "rmcorr_r": r,
+                    "rmcorr_dof": dof,
+                    "rmcorr_p": pval,
+                    "rmcorr_ci95": str(ci),
+                    "note": (
+                        "Exploratory repeated-measures association; "
+                        "interpret with individual trajectories and clinical timing."
+                    ),
+                }
+            )
+        except (ValueError, ZeroDivisionError, np.linalg.LinAlgError) as exc:
+            rows.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "status": f"rmcorr_failed:{type(exc).__name__}",
+                    "n_patients": int(n_patients),
+                    "n_exams": int(n_exams),
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def plot_pair(df: pd.DataFrame, x: str, y: str, r: float | None) -> None:
+    sub = df[["patient_id", "exam_order", x, y]].dropna().copy()
+    counts = sub.groupby("patient_id").size()
+    sub = sub[sub["patient_id"].isin(counts[counts >= 2].index)]
+    if sub.empty:
+        return
+
+    outdir = cfg.FIGURES / f"03_{cfg.ANALYSIS_COHORT}_rmcorr"
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(6.5, 5.5))
+
+    for _, g in sub.groupby("patient_id"):
+        g = g.sort_values("exam_order")
+        ax.plot(
+            g[x],
+            g[y],
+            marker="o",
+            linewidth=1,
+            alpha=0.45,
+        )
+
+    ax.set_xlabel(x)
+    ax.set_ylabel(y)
+    title = f"{x} vs {y}: within-patient repeated measures"
+    if r is not None and np.isfinite(r):
+        title += f"\nrmcorr r={r:.3f}"
+    ax.set_title(title)
+    ax.grid(alpha=0.2)
+    fig.tight_layout()
+    fig.savefig(outdir / f"{x}__{y}.png", dpi=180)
+    plt.close(fig)
+
+
+def timing_protocol_context(df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+
+    for patient_id, g in df.groupby("patient_id"):
+        row = {
+            "patient_id": patient_id,
+            "exam_n": int(len(g)),
+        }
+
+        if "days_to_transfer" in g.columns:
+            s = pd.to_numeric(g["days_to_transfer"], errors="coerce").dropna()
+            row["days_to_transfer_min"] = s.min() if not s.empty else np.nan
+            row["days_to_transfer_max"] = s.max() if not s.empty else np.nan
+            row["days_to_transfer_range"] = (
+                s.max() - s.min() if not s.empty else np.nan
+            )
+
+        if "protocol" in g.columns:
+            row["protocol_nunique"] = int(g["protocol"].dropna().nunique())
+            row["protocol_consistent"] = (
+                g["protocol"].dropna().nunique() <= 1
+            )
+
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def endometrium_type_transition_summary(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if "endometrium_type" not in df.columns:
+        return pd.DataFrame(), pd.DataFrame()
+
+    targets = [
+        c for c in [
+            "vfi",
+            "pi",
+            "clinical_total_peristalsis_rate_min",
+            "anterior_amplitude",
+            "posterior_amplitude",
+        ]
+        if c in df.columns
+    ]
+
+    interval_rows = []
+    for patient_id, g in df.groupby("patient_id", sort=False):
+        g = g.sort_values("exam_order").reset_index(drop=True)
+        for i in range(1, len(g)):
+            a = g.iloc[i - 1]
+            b = g.iloc[i]
+            type_a = a.get("endometrium_type")
+            type_b = b.get("endometrium_type")
+            if pd.isna(type_a) or pd.isna(type_b):
+                continue
+
+            row = {
+                "patient_id": patient_id,
+                "from_exam_id": a["exam_id"],
+                "to_exam_id": b["exam_id"],
+                "type_from": type_a,
+                "type_to": type_b,
+                "type_changed": str(type_a) != str(type_b),
+            }
+
+            for col in targets:
+                va = pd.to_numeric(pd.Series([a[col]]), errors="coerce").iloc[0]
+                vb = pd.to_numeric(pd.Series([b[col]]), errors="coerce").iloc[0]
+                row[f"{col}__delta"] = (
+                    vb - va if pd.notna(va) and pd.notna(vb) else np.nan
+                )
+            interval_rows.append(row)
+
+    intervals = pd.DataFrame(interval_rows)
+    if intervals.empty:
+        return intervals, pd.DataFrame()
+
+    summary_rows = []
+    for changed, group in intervals.groupby("type_changed"):
+        for col in targets:
+            dcol = f"{col}__delta"
+            s = group[dcol].dropna()
+            if s.empty:
+                continue
+            summary_rows.append(
+                {
+                    "type_changed": bool(changed),
+                    "feature": col,
+                    "interval_n": int(len(s)),
+                    "patient_n": int(group.loc[s.index, "patient_id"].nunique()),
+                    "median_delta": float(s.median()),
+                    "q1_delta": float(s.quantile(0.25)),
+                    "q3_delta": float(s.quantile(0.75)),
+                }
+            )
+
+    return intervals, pd.DataFrame(summary_rows)
+
+
+def main() -> None:
+    cfg.ensure_output_dirs()
+    df = _load_analysis_data()
+
+    results = run_rm_corr(df)
+    results.to_csv(
+        cfg.TABLES / f"rmcorr_results_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    for _, row in results.iterrows():
+        if row.get("status") != "ok":
+            continue
+        plot_pair(
+            df,
+            row["x"],
+            row["y"],
+            row.get("rmcorr_r"),
+        )
+
+    context = timing_protocol_context(df)
+    context.to_csv(
+        cfg.TABLES / f"timing_protocol_context_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    transitions, transition_summary = endometrium_type_transition_summary(df)
+    transitions.to_csv(
+        cfg.TABLES / f"endometrium_type_transitions_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+    transition_summary.to_csv(
+        cfg.TABLES / f"endometrium_type_transition_summary_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    print(f"cohort={cfg.ANALYSIS_COHORT}")
+    print(results.to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()
+================ END FILE: 02_longitudinal_analysis/03_module_comovement.py ================
+
+================ BEGIN FILE: 02_longitudinal_analysis/04_outcome_self_control.py | git_blob_sha=40bf1ceb1a6133a94929e85d31b106a63fb9d2f0 ================
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.stats import wilcoxon
+
+import config as cfg
+
+
+def _load_analysis_data() -> pd.DataFrame:
+    path = cfg.TABLES / "master_long.csv"
+    if not path.exists():
+        raise FileNotFoundError("Run 01_build_master_table.py first.")
+
+    df = pd.read_csv(
+        path,
+        dtype={"exam_id": str, "patient_id": str},
+    )
+    df = df.loc[cfg.cohort_mask(df)].copy()
+    df["clinical_pregnancy"] = pd.to_numeric(
+        df["clinical_pregnancy"],
+        errors="coerce",
+    )
+    df = df[df["clinical_pregnancy"].isin([0, 1])].copy()
+
+    if df.empty:
+        raise ValueError("No known-outcome examinations in selected cohort.")
+
+    df["exam_datetime"] = pd.to_datetime(df["exam_datetime"], errors="coerce")
+    for col in cfg.ALL_CONTINUOUS_COLS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df.sort_values(["patient_id", "exam_order", "exam_datetime"])
+
+
+def discordant_patients(df: pd.DataFrame) -> pd.DataFrame:
+    counts = df.groupby("patient_id")["clinical_pregnancy"].nunique()
+    ids = counts[counts == 2].index
+    return df[df["patient_id"].isin(ids)].copy()
+
+
+def patient_outcome_summary(
+    df: pd.DataFrame,
+    features: list[str],
+) -> pd.DataFrame:
+    rows = []
+
+    for patient_id, g in df.groupby("patient_id", sort=False):
+        fail = g[g["clinical_pregnancy"] == 0]
+        succ = g[g["clinical_pregnancy"] == 1]
+        if fail.empty or succ.empty:
+            continue
+
+        row = {
+            "patient_id": patient_id,
+            "failure_exam_n": int(len(fail)),
+            "success_exam_n": int(len(succ)),
+        }
+
+        for col in features:
+            if col not in g.columns:
+                continue
+            f = pd.to_numeric(fail[col], errors="coerce").dropna()
+            s = pd.to_numeric(succ[col], errors="coerce").dropna()
+
+            fmed = f.median() if not f.empty else np.nan
+            smed = s.median() if not s.empty else np.nan
+
+            row[f"{col}__failure_median"] = fmed
+            row[f"{col}__success_median"] = smed
+            row[f"{col}__success_minus_failure"] = smed - fmed
+
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def feature_summary(
+    patient_summary: pd.DataFrame,
+    features: list[str],
+) -> pd.DataFrame:
+    rows = []
+
+    for col in features:
+        dcol = f"{col}__success_minus_failure"
+        if dcol not in patient_summary.columns:
+            continue
+
+        diff = pd.to_numeric(
+            patient_summary[dcol],
+            errors="coerce",
+        ).dropna()
+        if diff.empty:
+            continue
+
+        nonzero = diff[~np.isclose(diff, 0.0, atol=cfg.ZERO_TOL, rtol=0.0)]
+        if len(nonzero) >= 2:
+            try:
+                test = wilcoxon(
+                    nonzero,
+                    alternative="two-sided",
+                    method="auto",
+                )
+                pval = float(test.pvalue)
+            except ValueError:
+                pval = np.nan
+        else:
+            pval = np.nan
+
+        rows.append(
+            {
+                "feature": col,
+                "patient_n": int(len(diff)),
+                "median_success_minus_failure": float(diff.median()),
+                "q1": float(diff.quantile(0.25)),
+                "q3": float(diff.quantile(0.75)),
+                "success_higher_n": int((diff > cfg.ZERO_TOL).sum()),
+                "success_lower_n": int((diff < -cfg.ZERO_TOL).sum()),
+                "same_n": int(
+                    np.isclose(
+                        diff,
+                        0.0,
+                        atol=cfg.ZERO_TOL,
+                        rtol=0.0,
+                    ).sum()
+                ),
+                "wilcoxon_p_descriptive": pval,
+                "note": (
+                    "Exploratory only; p-value is descriptive and not a primary success criterion."
+                ),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def plot_slope(
+    patient_summary: pd.DataFrame,
+    features: list[str],
+) -> None:
+    outdir = cfg.FIGURES / f"04_{cfg.ANALYSIS_COHORT}_outcome_slope"
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    for col in features:
+        fcol = f"{col}__failure_median"
+        scol = f"{col}__success_median"
+        if fcol not in patient_summary.columns or scol not in patient_summary.columns:
+            continue
+
+        use = patient_summary[["patient_id", fcol, scol]].dropna()
+        if use.empty:
+            continue
+
+        fig, ax = plt.subplots(figsize=(6.5, 5.5))
+        for _, row in use.iterrows():
+            y0 = row[fcol]
+            y1 = row[scol]
+            if y1 > y0:
+                color = "tab:red"
+            elif y1 < y0:
+                color = "tab:blue"
+            else:
+                color = "0.5"
+
+            ax.plot(
+                [0, 1],
+                [y0, y1],
+                marker="o",
+                linewidth=1.2,
+                alpha=0.75,
+                color=color,
+            )
+
+        ax.set_xticks([0, 1], ["Failure", "Success"])
+        ax.set_ylabel(col)
+        ax.set_title(f"{col}: within-patient outcome comparison")
+        ax.grid(axis="y", alpha=0.2)
+        fig.tight_layout()
+        fig.savefig(outdir / f"{col}.png", dpi=180)
+        plt.close(fig)
+
+
+def nearest_opposite_outcome_pairs(
+    df: pd.DataFrame,
+    features: list[str],
+) -> pd.DataFrame:
+    """Choose one nearest opposite-outcome pair per patient, deterministically.
+
+    This is a sensitivity analysis only. It does not replace the all-cycle
+    patient-level median comparison.
+    """
+    rows = []
+
+    for patient_id, g in df.groupby("patient_id", sort=False):
+        g = g.sort_values(["exam_datetime", "exam_order", "exam_id"]).reset_index(drop=True)
+        candidates = []
+
+        for i in range(len(g)):
+            for j in range(i + 1, len(g)):
+                a = g.iloc[i]
+                b = g.iloc[j]
+                if a["clinical_pregnancy"] == b["clinical_pregnancy"]:
+                    continue
+
+                if pd.notna(a["exam_datetime"]) and pd.notna(b["exam_datetime"]):
+                    distance = abs(
+                        (b["exam_datetime"] - a["exam_datetime"]).total_seconds()
+                    )
+                else:
+                    distance = abs(float(b["exam_order"]) - float(a["exam_order"]))
+
+                candidates.append((distance, i, j))
+
+        if not candidates:
+            continue
+
+        _, i, j = sorted(candidates, key=lambda x: (x[0], x[1], x[2]))[0]
+        a = g.iloc[i]
+        b = g.iloc[j]
+
+        failure = a if a["clinical_pregnancy"] == 0 else b
+        success = a if a["clinical_pregnancy"] == 1 else b
+
+        row = {
+            "patient_id": patient_id,
+            "failure_exam_id": failure["exam_id"],
+            "success_exam_id": success["exam_id"],
+            "failure_exam_order": failure["exam_order"],
+            "success_exam_order": success["exam_order"],
+        }
+
+        for col in features:
+            if col not in g.columns:
+                continue
+            fv = pd.to_numeric(
+                pd.Series([failure[col]]),
+                errors="coerce",
+            ).iloc[0]
+            sv = pd.to_numeric(
+                pd.Series([success[col]]),
+                errors="coerce",
+            ).iloc[0]
+            row[f"{col}__failure"] = fv
+            row[f"{col}__success"] = sv
+            row[f"{col}__success_minus_failure"] = (
+                sv - fv if pd.notna(fv) and pd.notna(sv) else np.nan
+            )
+
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def sensitivity_feature_summary(
+    pairs: pd.DataFrame,
+    features: list[str],
+) -> pd.DataFrame:
+    rows = []
+    for col in features:
+        dcol = f"{col}__success_minus_failure"
+        if dcol not in pairs.columns:
+            continue
+        s = pd.to_numeric(pairs[dcol], errors="coerce").dropna()
+        if s.empty:
+            continue
+        rows.append(
+            {
+                "feature": col,
+                "patient_n": int(len(s)),
+                "median_success_minus_failure": float(s.median()),
+                "q1": float(s.quantile(0.25)),
+                "q3": float(s.quantile(0.75)),
+                "success_higher_n": int((s > cfg.ZERO_TOL).sum()),
+                "success_lower_n": int((s < -cfg.ZERO_TOL).sum()),
+                "same_n": int(
+                    np.isclose(
+                        s,
+                        0.0,
+                        atol=cfg.ZERO_TOL,
+                        rtol=0.0,
+                    ).sum()
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def export_review_workbook(df: pd.DataFrame) -> None:
+    cols = [c for c in cfg.REVIEW_COLS if c in df.columns]
+    extra = [
+        c for c in cfg.PRIMARY_ANALYSIS_COLS
+        if c in df.columns and c not in cols
+    ]
+    review = df[cols + extra].copy()
+
+    review_path = (
+        cfg.TABLES
+        / f"discordant_case_review_{cfg.ANALYSIS_COHORT}.xlsx"
+    )
+    with pd.ExcelWriter(review_path, engine="openpyxl") as writer:
+        review.to_excel(writer, index=False, sheet_name="all_exams")
+
+
+def main() -> None:
+    cfg.ensure_output_dirs()
+    df = _load_analysis_data()
+    disc = discordant_patients(df)
+
+    if disc.empty:
+        print("No patients with both success and failure outcomes.")
+        return
+
+    features = [
+        c for c in (
+            cfg.PRIMARY_ANALYSIS_COLS
+            + cfg.SECONDARY_ANALYSIS_COLS
+            + cfg.EXPLORATORY_ANALYSIS_COLS
+        )
+        if c in disc.columns
+    ]
+
+    disc.to_csv(
+        cfg.TABLES / f"discordant_all_exams_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    patient_summary = patient_outcome_summary(disc, features)
+    patient_summary.to_csv(
+        cfg.TABLES / f"outcome_patient_summary_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    summary = feature_summary(patient_summary, features)
+    summary.to_csv(
+        cfg.TABLES / f"outcome_feature_summary_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    plot_slope(
+        patient_summary,
+        [c for c in cfg.PRIMARY_ANALYSIS_COLS if c in disc.columns],
+    )
+
+    nearest = nearest_opposite_outcome_pairs(disc, features)
+    nearest.to_csv(
+        cfg.TABLES / f"nearest_opposite_outcome_pairs_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+    nearest_summary = sensitivity_feature_summary(nearest, features)
+    nearest_summary.to_csv(
+        cfg.TABLES / f"nearest_opposite_outcome_summary_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    export_review_workbook(disc)
+
+    print(f"cohort={cfg.ANALYSIS_COHORT}")
+    print(f"discordant patients={disc['patient_id'].nunique()}")
+    print(summary.to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()
+================ END FILE: 02_longitudinal_analysis/04_outcome_self_control.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/SOURCE_LOCK.json | git_blob_sha=7ff773ab8ec134f5caa2fa18d1722de270eae134 ================
+{
+  "final_pipeline_version": "UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1",
+  "base_repository": "wyxwyx357-del/uterine-wave-propagation-features",
+  "base_main_commit": "ffe07932c39b49f2eedfda4b841e69d98ae77754",
+  "m1_source_commit": "75d26aca0803c15535383b8a62b372c10a521863",
+  "m1_algorithm_version": "m1-global-pairing-unseen-v1",
+  "git_blob_sha1": {
+    "analysis/__init__.py": "87ed5210ce8514378db4796e666a1c64a4ec13b8",
+    "analysis/mse_pregnancy_association/__init__.py": "87ed5210ce8514378db4796e666a1c64a4ec13b8",
+    "analysis/mse_pregnancy_association/code/__init__.py": "87ed5210ce8514378db4796e666a1c64a4ec13b8",
+    "analysis/mse_pregnancy_association/code/activity_counting.py": "367c041f741d65703ddeaef24c3926a12f97d982",
+    "analysis/mse_pregnancy_association/code/activity_strength.py": "db0331848cc88d72f0f3aac169f6ec770f7d61fd",
+    "analysis/mse_pregnancy_association/code/batch_wave_counts.py": "cca924173f5bd064bdb8d82e915f5b8de00a6cc7",
+    "analysis/mse_pregnancy_association/code/candidate_split_verifier.py": "b7d4a5f038eca7f89c0c5b61b9ee2af729e82a51",
+    "analysis/mse_pregnancy_association/code/direction_identity_trial.py": "4420d5235266f822b89ac2fb4a714e5fdeadcc85",
+    "analysis/mse_pregnancy_association/code/event_input_smoothing.py": "ec82144daf4d286c5f6c3716c6ca1c3bdfe14192",
+    "analysis/mse_pregnancy_association/code/global_event_ownership.py": "8842bfe346b6a0c335abd99e2e5099903626d2b4",
+    "analysis/mse_pregnancy_association/code/normalized_activity.py": "1e051554c5ff57fb2a2493a9240aba8a036cec51",
+    "analysis/mse_pregnancy_association/code/partial_phase_events.py": "96355a97539334ea77eca2da7c443ca99dce43a0",
+    "analysis/mse_pregnancy_association/code/patient_activity_aggregation.py": "e63d565076d28e40e13229de257533f584eea137",
+    "analysis/mse_pregnancy_association/code/record_mse_core.py": "20d99c73fd1aed6768c6a00ee9ed4263c9be4a89",
+    "analysis/mse_pregnancy_association/code/measurement/__init__.py": "3b909b0aa1bc24616253232574052b573347e51c",
+    "analysis/mse_pregnancy_association/code/measurement/_lk.py": "8d0c6b2182b49ddcfbfa353a9084d7556916363d",
+    "analysis/mse_pregnancy_association/code/measurement/amplitude.py": "458e7da3f63af67a0eaba34d18402f72adb764fc",
+    "analysis/mse_pregnancy_association/code/measurement/deformation.py": "15ebcbd140a72dc36a0205116220b54bf874e7af",
+    "analysis/mse_pregnancy_association/code/measurement/events.py": "9bd0b170b58104b006fd16c53ee1112935a955ab",
+    "analysis/mse_pregnancy_association/code/measurement/geometry.py": "6cc63a645a0a81f4c1d4b77d7134b8c8bbfcae00",
+    "analysis/mse_pregnancy_association/code/measurement/io.py": "48ab492f0e947af0b104b2f08aab6a9288ce317e",
+    "analysis/mse_pregnancy_association/code/measurement/modes.py": "f325b7ec20ba0486bf2b65ebe5d57bc64a5f77c9",
+    "analysis/mse_pregnancy_association/code/measurement/patient.py": "aa9103e93c7fdb24235d4725474c59f05d87fc08",
+    "analysis/mse_pregnancy_association/code/measurement/radial_events.py": "2d4f18133d72b87dca6cb4e672a569b930f425a2",
+    "analysis/mse_pregnancy_association/code/measurement/spectrum.py": "2517fe0c5b74f09856c0747e3cf16a59535be049",
+    "analysis/mse_pregnancy_association/code/measurement/tracking.py": "1e6fd1ac3592b8eb855a547deafb53301e208a84",
+    "analysis/mse_pregnancy_association/code/measurement/wavefit.py": "60888d1088ce966e78fe32d6782a85fe7648312b",
+    "experiments/step2_salience_sandbox/__init__.py": "560626bd0f5b54c6bf43b033c9c2de3a0f5fe0e5",
+    "experiments/step2_salience_sandbox/upstream.py": "b553ce63f79aa9e35faa4cb27fcf60585409cf6b",
+    "experiments/step2_salience_sandbox/mechanism_2x2/__init__.py": "02a65cd55d2b79674a38e5e35797f01c08030b27",
+    "experiments/step2_salience_sandbox/mechanism_2x2/mechanisms.py": "0035adc24aef465dc24be4a8676869c840239259",
+    "uterine_wave/__init__.py": "3b909b0aa1bc24616253232574052b573347e51c",
+    "uterine_wave/amplitude.py": "458e7da3f63af67a0eaba34d18402f72adb764fc",
+    "uterine_wave/radial_events.py": "2d4f18133d72b87dca6cb4e672a569b930f425a2"
+  },
+  "r2_version": "R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106",
+  "r2_sha256": {
+    "FROZEN_SPEC.json": "00c186d4e62d560fa887d934862e53fc64a7bfddd1f5f3cdf85ac6fd2ea3ada5",
+    "build_medium_consensus.py": "42a4b38c2ec9b99ab5271eada9e92173028d8eed1e57aeb2d6851cb6d3a3cd88",
+    "case_manifest_template.csv": "6d7df5f24d9fe1e446f4c9b33f5b50b9eb7b0d62acae5a24b67d13f0f9fdb146",
+    "code/ab_block_tracking.py": "a96a2845bedf8174775ccb27928e188fc6e455235759cde22f664abe83fdad83",
+    "code/contrast.py": "6aa67f9a37224d19899094c938030d663d2df93e7d2c90c9a6368d348003abd0",
+    "code/cuda_sparse_lk.py": "f6c28eb982ee08e20bb473790c9a297594a47e2122ff0dcef5d1f93b5041ee8e",
+    "code/frequency.py": "05d61e2e94dc9a03cf2c651a854b9384979a1bda032dea5753ed2ae5d4d8f922",
+    "code/rigid_correction.py": "35c2c09db0cf53a35805515601d3f689db6809b2197fd1438f7923a9dc098114",
+    "code/run_context_evidence_pilot.py": "4a7a20751ed716ecac82594c1b3c9e4a893453009fc8f41f468f195b5d1b4a5d",
+    "code/run_frequency.py": "2efe4f4472dfd39e9609451dfcdf6c212c83076c17d829de523982690ee927ef",
+    "code/run_local_motion_frequency.py": "474058d3f9aa4fd6a3fbdf200d0c5d4359671408a26bdd0d3d3013a944bf3099",
+    "code/run_real_context_evidence.py": "d6740efbb4227fb037abc93a3e59bd5b8ebe9ad6ae95872456aab7c99e9bfa6d",
+    "code/run_regional_frequency.py": "451d4498de0f8d013deb694c0d90a205448ea84e718bcc6726c47f94dbc02477",
+    "code/validate_regional_v1_1.py": "54b9f0c1dd69b2695493a5ef399065d14b316663681d3d44feae8cd2bc363333",
+    "code/verify_cuda_backend.py": "6d38127dc089fcc799299f2ecf7804d64b6f6701f6b771604eaf5025e6e66764",
+    "extract_longitudinal_frequency.py": "93367a2cdb6de6995e0cf2146d7391efc3875d5fd0562f5a8c4f8e1752fda17c",
+    "prepare_frozen_inputs.py": "94cd507600bbfc0769f74bfe58c9d8d88b8e71d338fbe444250a6aec954bec0e",
+    "requirements.txt": "3b1275f05aedcab6195cd990b2c9d25db0f458042412874e918b78400cf096b6",
+    "run_tracking_batch.py": "22e61360299b289b1c2eac9ee478ab8afdc51b84755d23306f4df07281399c12",
+    "track_and_cache_frequency.py": "900136338512e7e04a3510896a4d255fca37cf136b578c8a2b5b3293f37cd965",
+    "validate_reproducibility.py": "87502483895c2fda9d5ffea6dca2e177831594fa1c460751bb46270e25ad61a1",
+    "verify_tracking_inputs.py": "6f9df04ef43bd30eb49c7ad57b1f2170e8b396aa1b47f623be74fb091c40a722"
+  },
+  "clinical_outcome_code_included": false,
+  "experimental_pose_reset_included": false,
+  "nnunet_recovery_included": false,
+  "engineering_revision": "20261126_gemini_audit_fix3",
+  "algorithm_definition_unchanged": true
+}
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/SOURCE_LOCK.json ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/FINAL_PIPELINE_SPEC.json | git_blob_sha=cddb40d54f5cad94b2f6161e4fd2f006fe55b4f3 ================
+{
+  "version": "UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1",
+  "outcomes_read": false,
+  "pose_reset": false,
+  "nnunet_recovery": false,
+  "a0_interval_s": 2,
+  "mse_s_range": [
+    0.2,
+    0.8
+  ],
+  "mse_window_s": 20,
+  "mse_step_s": 1,
+  "m1_algorithm": "m1-global-pairing-unseen-v1",
+  "m1_noise_floor_s_inv": 0.0007509593468916695,
+  "m1_min_continuous_run_s": 12,
+  "m1_min_adjacent_native_sections": 3,
+  "m1_salience_cutoff": 0.6,
+  "m1_main_scalar": "m1_prop_rate_min_per_min",
+  "r2_version": "R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106",
+  "r2_wall": "posterior",
+  "r2_patient_aggregation": "equal mean over retained posterior cervical/middle/fundal regions",
+  "missing_policy": "leave blank/NaN; never replace with zero",
+  "engineering_revision": "20261126_gemini_audit_fix3",
+  "algorithm_definition_unchanged": true,
+  "case_id_policy": "preserve as string from manifest through all R2/longitudinal joins",
+  "manifest_path_policy": "relative paths resolved against the manifest directory before processing",
+  "r2_case_failure_policy": "isolate failed or invalid R2 cases; retain final row with NaN and status/failure reason; do not abort successful cases",
+  "source_hash_policy": "canonical LF text hashing plus repository .gitattributes eol=lf",
+  "r2_partial_failure_merge_policy": "merge successful cases only; failed cases retained as status/reason and never indexed from outputs",
+  "r2_cache_temp_policy": "temporary cache files do not end in .npz and are excluded from trajectory-cache discovery"
+}
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/FINAL_PIPELINE_SPEC.json ================
+
+================ BEGIN FILE: 01_feature_extraction/PIPELINE_ORCHESTRATION_LOCK.json | git_blob_sha=3dcf36ce75974c37a91239d90a330641c9da543a ================
+{
+  "lock_version": "PIPELINE_ORCHESTRATION_LOCK_20261126_FIX3",
+  "purpose": "Formal feature-extraction orchestration only; algorithm definitions remain locked separately in frozen_runtime_20261126/SOURCE_LOCK.json",
+  "algorithm_definition_unchanged": true,
+  "git_blob_sha1": {
+    "01_feature_extraction/run_feature_extraction.py": "1f48f4f6ec2c20e12ee734b39eefee747e011bf7",
+    "01_feature_extraction/export_auto_features.py": "7419388eadddd35e8a040ce8771791a7f6f6bd18",
+    "01_feature_extraction/frozen_runtime_20261126/run_final_batch.py": "1e229010bf85b3864e0a388a1194b4ead336186f",
+    "01_feature_extraction/frozen_runtime_20261126/verify_environment.py": "ade09ea4e2995779e09e3127a37addc4f219ccb6",
+    "01_feature_extraction/frozen_runtime_20261126/preflight_tests.py": "f2a4d9c087dd437f947743f91f23102ef9c80db8",
+    "01_feature_extraction/frozen_runtime_20261126/FINAL_PIPELINE_SPEC.json": "cddb40d54f5cad94b2f6161e4fd2f006fe55b4f3",
+    "01_feature_extraction/frozen_runtime_20261126/SOURCE_LOCK.json": "7ff773ab8ec134f5caa2fa18d1722de270eae134",
+    "01_feature_extraction/frozen_runtime_20261126/manifest_template.csv": "afbdac923869a5c301e50bfbd01f8de6537d4e0e"
+  }
+}
+================ END FILE: 01_feature_extraction/PIPELINE_ORCHESTRATION_LOCK.json ================
+
+================ BEGIN FILE: 01_feature_extraction/ENGINEERING_FIXES_20261126.md | git_blob_sha=c462f436858ca2a758f5f9730652542ddca1e8ef ================
+# Engineering hardening after Gemini final audit — 2026-11-26
+
+Revision:
+
+```text
+20261126_gemini_audit_fix3
+```
+
+Fix3 closes the final completion-audit BLOCKER and the two remaining MINOR findings:
+- `run_tracking_batch.py` skips failed case IDs during merged-table assembly, so a single tracking failure cannot raise `KeyError` and collapse R2 for successful cases;
+- `track_and_cache_frequency.py` writes temporary cache files with a non-`.npz` suffix, so interrupted temporary files are not discovered as trajectory caches;
+- `02_delta_and_qc.py`, `03_module_comovement.py`, and `04_outcome_self_control.py` preserve `exam_id` and `patient_id` as strings when re-reading `master_long.csv`.
+
+Fix2 had already closed the earlier two MINOR findings:
+- `export_auto_features.py` validates the `case_id` column and missing values before string coercion, so malformed NaN IDs cannot become the literal string `"nan"`;
+- `preflight_tests.py` uses `Path(__file__).resolve().parent` as the frozen-runtime import root.
+
+This revision is intentionally limited to orchestration, identity preservation,
+input validation and reproducibility safeguards. It does **not** change the
+locked mathematical definitions or thresholds of A0, amplitude, ER, MSE, M1 or
+R2.
+
+## Fixed BLOCKER 1 — source-lock verification
+
+- corrected `verify_environment.py` so `SOURCE_LOCK.json` paths are resolved
+  relative to `frozen_runtime_20261126/`, where the locked source actually lives;
+- added repository `.gitattributes` with LF line endings for text source files;
+- hash verification canonicalizes text line endings to LF, preventing Windows
+  `core.autocrlf` from producing false source-lock failures;
+- added `01_feature_extraction/PIPELINE_ORCHESTRATION_LOCK.json` for the formal
+  entry/wrapper/spec files that were previously outside `SOURCE_LOCK.json`.
+
+## Fixed BLOCKER 2 — one R2 case must not abort the cohort
+
+- `r2_frozen/run_tracking_batch.py` now merges all successfully completed cases
+  even when other cases fail;
+- failed cases are recorded in `merged_results/failed_cases.csv` and in
+  `resumable_status.json`;
+- downstream cache discovery ignores caches from cases whose tracking state is
+  not `complete`;
+- `run_final_batch.py` carries failed/invalid R2 cases forward as
+  `R2_frequency_cpm = NaN` plus `R2_status` and `R2_failure_reason`;
+- an unexpected whole-stage R2 exception is isolated from A0/M1/MSE so the final
+  examination table can still be produced with explicit R2 failure status.
+
+No failed R2 measurement is replaced by zero.
+
+## Fixed BLOCKER 3 — case/exam ID type stability
+
+- manifest `case_id` remains a string from CSV input onward;
+- R2 pandas CSV readers explicitly preserve `case_id` as string;
+- compatibility export preserves `case_id` before renaming to `exam_id`;
+- longitudinal clinical/feature merge preserves exam identifiers as strings;
+- dynamic feature rows whose exam IDs do not exist in the clinical table now
+  raise an explicit error instead of being silently dropped.
+
+This protects identifiers such as `00123` from accidental conversion to
+`123`.
+
+## Fixed MAJOR — relative manifest paths
+
+Formal manifest path fields are resolved relative to the manifest file's own
+directory before A0/R2 processing:
+
+- video
+- annotation
+- pose
+- a0_spacetime_cache
+- r2_tracking
+- r2_nodes
+
+R2 therefore receives absolute paths even when the user supplies portable
+relative manifest paths.
+
+## Explicit geometry preflight
+
+The current R2 algorithm still has its existing source-video geometry
+requirement:
+
+```text
+1260 x 910
+```
+
+This algorithmic assumption was **not changed**. Instead,
+`verify_tracking_inputs.py` now reports
+`unsupported_video_geometry:<width>x<height>;expected_1260x910` before
+tracking. The incompatible case is isolated rather than allowed to crash the
+cohort.
+
+Changing the R2 background ROI or geometry normalization would be a measurement
+algorithm change and is outside this engineering revision.
+
+## Formal manifest cleanup
+
+The formal manifest template no longer advertises
+`a0_tracks_cache` / `a0_layout_cache`, because the formal
+`run_final_batch.py` does not consume them.
+
+The deprecated broken `run_final_batch_full.py` wrapper was removed from the
+formal runtime. Git history retains it for audit.
+
+## Lock state after fixes
+
+- orchestration lock: verified against current Git blob SHAs;
+- modified R2 source files: verified against current canonical-LF SHA256 values
+  in `SOURCE_LOCK.json`;
+- `algorithm_definition_unchanged = true` is recorded in the lock/spec.
+
+## Still intentionally unchanged
+
+The following were **not** modified:
+
+- A0 tracking parameters;
+- amplitude definition;
+- ER 20 s / 0.5–5 cpm directional spectrum definition;
+- record MSE formulas;
+- M1 thresholds/identity/count definition;
+- R2 0.5–5.0 cpm grid and 0.05 cpm step;
+- R2 fixed-point/continuous-segment rules;
+- R2 high + validated-stable-medium retention;
+- final posterior retained-region equal-mean aggregation;
+- R2 hard-coded background ROI / source geometry algorithm.
+
+## Required local validation before full patient batch
+
+On the target CUDA machine, run:
+
+```bash
+python 01_feature_extraction/frozen_runtime_20261126/verify_environment.py
+python 01_feature_extraction/frozen_runtime_20261126/preflight_tests.py
+```
+
+Then perform a small engineering pilot containing at least:
+
+1. one normal case;
+2. one deliberately invalid/failed R2 case;
+3. one string ID with leading zero, e.g. `00123`;
+4. one manifest using relative paths.
+
+Expected behavior: the valid cases continue, failed measurements remain NaN
+with status/reason, IDs remain exact strings, and
+`FINAL_DYNAMIC_FEATURES.csv` is still produced.
+================ END FILE: 01_feature_extraction/ENGINEERING_FIXES_20261126.md ================
