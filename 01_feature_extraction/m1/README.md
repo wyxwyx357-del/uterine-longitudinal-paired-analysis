@@ -1,36 +1,28 @@
-# M1
+# M1 significant propagation activity
 
-M1 冻结源码已迁入。
+最终冻结候选源码已从分支：
 
-正式运行版本位于：
+`m1-global-pairing-unseen-v1-source-20261126`
 
-```text
-../frozen_runtime_20261126/analysis/mse_pregnancy_association/code/
-../frozen_runtime_20261126/experiments/step2_salience_sandbox/
-```
+迁入。
 
-独立来源快照位于：
+主要文件：
 
 ```text
-frozen_source/
+frozen_source/activity_counting.py
+frozen_source/activity_strength.py
+frozen_source/global_event_ownership.py
+frozen_source/normalized_activity.py
+frozen_source/patient_activity_aggregation.py
+frozen_source/m1_cohort_frozen.py
 ```
 
-来源提交：
+冻结配置/记录：
 
-```text
-75d26aca0803c15535383b8a62b372c10a521863
-```
+`ACTIVITY_COUNT_V2_STEP1_FREEZE.json`
 
-算法版本：
+为了不改原 import，完整包路径副本位于：
 
-```text
-m1-global-pairing-unseen-v1
-```
+`../frozen_m1_mse_bundle/`
 
-正式输出主字段：
-
-```text
-m1_prop_rate_min_per_min
-```
-
-M1 读取 A0 径向时空表征，不替代 R2 frequency，也不直接等同于真实蠕动波频率。
+M1 为显著传播活动率候选，不等同于真实生理波频率。
