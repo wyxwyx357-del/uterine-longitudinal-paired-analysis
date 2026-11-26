@@ -233,7 +233,10 @@ def main() -> int:
         fields: list[str] = []
         combined: list[dict[str, str]] = []
         for row in manifest_rows:
-            own_fields, own_rows = read_csv(Path(outputs[row["case_id"]]) / table)
+            case_id = row["case_id"]
+            if case_id not in outputs:
+                continue
+            own_fields, own_rows = read_csv(Path(outputs[case_id]) / table)
             for field in own_fields:
                 if field not in fields:
                     fields.append(field)
