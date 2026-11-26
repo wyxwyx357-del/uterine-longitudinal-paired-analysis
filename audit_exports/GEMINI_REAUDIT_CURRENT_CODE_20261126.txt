@@ -1,0 +1,1238 @@
+GEMINI RE-AUDIT CURRENT CODE BUNDLE
+Repository: wyxwyx357-del/uterine-longitudinal-paired-analysis
+Branch: main
+HEAD at export: 81bf6b7926f8cc675cdfa147d89b36486046e1ea
+
+RULES FOR THIS EXPORT
+- Every source section below was read from the current GitHub main branch.
+- Text between BEGIN FILE and END FILE markers is copied without code rewriting or reformatting.
+- The separator lines are not part of the original source file.
+- git_blob_sha is supplied for independent identity checking.
+- Deprecated run_final_batch_full.py is intentionally excluded because it was removed from current main.
+- This bundle focuses on the current formal production measurement chain, its locks/specs, and the longitudinal-analysis module.
+
+
+================ BEGIN FILE: .gitattributes | git_blob_sha=66f6dfd8fe2141f54fbfc8b4bae7bb4734acb695 ================
+# Keep frozen source hashes stable across Windows/Linux checkouts.
+*.py text eol=lf
+*.json text eol=lf
+*.csv text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+================ END FILE: .gitattributes ================
+
+================ BEGIN FILE: .gitignore | git_blob_sha=b388b920d5a3ae91368353ff66c25080e2071c7b ================
+# Patient / clinical data: never commit
+**/data_raw/
+**/data/
+**/private/
+**/raw/
+**/clinical/
+**/videos/
+**/inputs/
+*.xlsx
+*.xls
+*.csv
+*.tsv
+*.dcm
+*.dicom
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.npz
+*.npy
+
+# Generated local outputs / caches
+**/outputs/
+**/figures/
+**/reports_private/
+**/cache/
+**/tracking_outputs/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+================ END FILE: .gitignore ================
+
+================ BEGIN FILE: README.md | git_blob_sha=c28c563e2cbe469c62e3f55825dd0e703305da77 ================
+# Uterine longitudinal ultrasound project
+
+本仓库用于同一患者多次超声检查的动态特征提取与纵向分析，正式拆成两个模块：
+
+```text
+视频 / 已有追踪与节点输入
+        ↓
+01_feature_extraction/
+        ↓
+outputs/FINAL_DYNAMIC_FEATURES.csv
+        ↓
+02_longitudinal_analysis/
+        ↓
+master_long.csv
+        ↓
+患者内变化 / 模块联动 / 成功失败自身对照
+```
+
+## 01_feature_extraction — measurement
+
+负责“动态特征怎么算出来”。
+
+当前正式 integrated runtime：
+
+```text
+01_feature_extraction/frozen_runtime_20261126/
+```
+
+正式 pipeline version：
+
+```text
+UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1
+```
+
+包含当前锁定的：
+
+- A0 tracking / 约2 s radial spacetime；
+- anterior / posterior amplitude；
+- ER；
+- record MSE；
+- M1 significant propagation activity；
+- R2 current longitudinal posterior frequency；
+- source/environment/preflight checks。
+
+R2 正式版本：
+
+```text
+R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106
+```
+
+current R2 位于：
+
+```text
+01_feature_extraction/frozen_runtime_20261126/r2_frozen/
+```
+
+它是 current locked workflow，不声称等同于此前尝试恢复的 historical requested SHA set。
+
+### Feature extraction run
+
+manifest 模板：
+
+```text
+01_feature_extraction/frozen_runtime_20261126/manifest_template.csv
+```
+
+正式入口：
+
+```bash
+python 01_feature_extraction/run_feature_extraction.py \
+  --manifest <manifest.csv> \
+  --work-dir 01_feature_extraction/outputs/frozen_run \
+  --r2-workers 1
+```
+
+成功后正式输出：
+
+```text
+01_feature_extraction/outputs/FINAL_DYNAMIC_FEATURES.csv
+```
+
+`auto_features.csv` 仅作为旧代码兼容投影，不是正式 source of truth。
+
+### Environment
+
+dynamic runtime 依赖：
+
+```text
+01_feature_extraction/frozen_runtime_20261126/requirements.txt
+```
+
+CUDA LK 必须使用已有 CUDA-enabled OpenCV + `cudaoptflow`。
+
+不要安装普通 pip `opencv-python` 来替代 CUDA OpenCV，也不要静默退回 CPU 算法。
+
+环境检查：
+
+```bash
+python 01_feature_extraction/frozen_runtime_20261126/verify_environment.py
+python 01_feature_extraction/frozen_runtime_20261126/preflight_tests.py
+```
+
+详细来源：
+
+- [Feature extraction README](01_feature_extraction/README.md)
+- [Output schema](01_feature_extraction/OUTPUT_SCHEMA.md)
+- [Source provenance](01_feature_extraction/SOURCE_PROVENANCE.md)
+
+## 02_longitudinal_analysis — repeated examinations
+
+负责“同一患者不同检查怎么分析”。
+
+正式动态输入：
+
+```text
+01_feature_extraction/outputs/FINAL_DYNAMIC_FEATURES.csv
+```
+
+运行：
+
+```bash
+python 02_longitudinal_analysis/01_build_master_table.py
+python 02_longitudinal_analysis/02_delta_and_qc.py
+python 02_longitudinal_analysis/03_module_comovement.py
+python 02_longitudinal_analysis/04_outcome_self_control.py
+```
+
+分析重点：
+
+- 每行一次检查；
+- 同一患者保留2/3/4+次合格检查；
+- 相邻变化只作患者内轨迹/描述与QC；
+- 预设少量形态—血流—动态 repeated-measures association；
+- discordant-outcome患者做success vs failure自身对照；
+- 当前pilot不做AUC hunting、LASSO/SVM/XGBoost/深度学习。
+
+见 [Longitudinal analysis README](02_longitudinal_analysis/README.md)。
+
+## Outcome blindness
+
+动态 measurement chain 明确：
+
+```text
+outcomes_read = false
+```
+
+妊娠结局只进入第二模块统计阶段，不用于调整 tracking、frequency、M1、MSE 或 amplitude 算法。
+
+## Missing data
+
+统一原则：
+
+```text
+measurement failure != 0
+```
+
+R2/M1/MSE/amplitude/tracking 失败保持 blank / NaN，并尽可能保留 status / failure reason。
+
+## Privacy
+
+这是公开仓库。禁止提交：
+
+- 姓名、门诊号、身份证号、电话；
+- 原始临床表；
+- 超声视频、DICOM、截图；
+- 患者级 NPZ / tracking outputs；
+- 实名本地路径；
+- 本地 analysis outputs。
+
+真实数据和本地输出由 `.gitignore` 屏蔽。
+================ END FILE: README.md ================
+
+================ BEGIN FILE: requirements.txt | git_blob_sha=6edbdb0a02163afc8746aabddffafdf0109478e8 ================
+numpy>=1.26
+pandas>=2.0
+scipy>=1.11
+matplotlib>=3.8
+pingouin>=0.5.4
+openpyxl>=3.1
+================ END FILE: requirements.txt ================
+
+================ BEGIN FILE: 01_feature_extraction/README.md | git_blob_sha=dd1fd3dfb175c62b9e45fe3d2bd1f4ec38887d03 ================
+# 01 — Feature extraction
+
+本模块负责：
+
+```text
+视频 / 既有 tracking / nodes
+→ tracking / motion correction
+→ local motion representation
+→ amplitude / ER / MSE / M1 / R2
+→ QC / status / provenance
+→ FINAL_DYNAMIC_FEATURES.csv
+```
+
+## Formal production runtime
+
+当前正式 integrated runtime：
+
+```text
+frozen_runtime_20261126/
+```
+
+版本：
+
+```text
+UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1
+```
+
+锁文件：
+
+```text
+PIPELINE_ORCHESTRATION_LOCK.json
+frozen_runtime_20261126/SOURCE_LOCK.json
+frozen_runtime_20261126/FINAL_PIPELINE_SPEC.json
+```
+
+其中 `PIPELINE_ORCHESTRATION_LOCK.json` 锁定正式入口/调度文件；
+`SOURCE_LOCK.json` 锁定底层 measurement/R2 源码。
+
+该 runtime 是当前工作流的正式执行来源。不要把 `wave_features/`、`m1/frozen_source/` 或独立 P3 仓库中的文件人工拼成另一条生产主链。
+
+## Current R2 is present
+
+R2 current workflow 已完整存在：
+
+```text
+frozen_runtime_20261126/r2_frozen/
+```
+
+版本：
+
+```text
+R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106
+```
+
+正式 exam-level R2：
+
+```text
+retained posterior cervical/middle/fundal optimized frequency
+→ equal mean
+→ R2_frequency_cpm
+```
+
+无 retained posterior region 时保持 NaN，并输出 R2 status/failure reason。
+
+历史 requested SHA 不是 current production lock；详见：
+
+```text
+r2_frequency/HISTORICAL_REQUESTED_SOURCE_HASHES.json
+```
+
+current production lock 始终以：
+
+```text
+frozen_runtime_20261126/SOURCE_LOCK.json
+```
+
+为准。
+
+## Formal run
+
+manifest 模板：
+
+```text
+frozen_runtime_20261126/manifest_template.csv
+```
+
+入口：
+
+```bash
+python 01_feature_extraction/run_feature_extraction.py \
+  --manifest <manifest.csv> \
+  --work-dir 01_feature_extraction/outputs/frozen_run \
+  --r2-workers 1
+```
+
+正式输出：
+
+```text
+outputs/FINAL_DYNAMIC_FEATURES.csv
+```
+
+兼容旧代码时才额外生成：
+
+```text
+outputs/auto_features.csv
+```
+
+可以使用 `--no-compat-auto-features` 关闭兼容投影。
+
+## Input expectations
+
+combined current workflow 的 manifest 可以包含：
+
+```text
+case_id
+video
+annotation
+pose
+time_factor
+a0_spacetime_cache
+r2_tracking
+r2_nodes
+mm_per_processed_pixel
+```
+
+A0 若已有完整 spacetime cache 可复用；否则需要 video + annotation + pose。
+
+R2 需要现有 video + R2 tracking seed + nodes + pixel scale。当前工作流不会自动生成缺失的 R2 输入。
+
+## Main feature fields
+
+- anterior_amplitude
+- posterior_amplitude
+- anterior_ER_mean_paired
+- posterior_ER_mean_paired
+- record_MSE_time_equal
+- m1_prop_rate_min_per_min
+- R2_frequency_cpm
+- raw_valid_fraction
+
+同时保留 status、failure reason、MSE decomposition、M1 count range、R2 retained region count 等。
+
+字段契约见 [OUTPUT_SCHEMA.md](OUTPUT_SCHEMA.md)。
+
+## Independent source archives
+
+为可追溯性，仓库仍保留：
+
+- `tracking/`：独立 P3/radial tracking 迁移源码；
+- `wave_features/`：A0/radial wave research package；
+- `m1/frozen_source/`、`er_mse/frozen_source/`：功能分类副本；
+- `frozen_m1_mse_bundle/`：原 import 路径结构。
+
+这些用于审计/复现来源，不取代 formal integrated runtime。
+
+## Environment
+
+```bash
+python -m pip install -r 01_feature_extraction/frozen_runtime_20261126/requirements.txt
+```
+
+requirements 故意不安装普通 `opencv-python`。
+
+必须保留 CUDA-enabled OpenCV with `cudaoptflow`。环境不满足时停止，不能换算法。
+
+## Outcome blindness and missing data
+
+current spec：
+
+```text
+outcomes_read = false
+missing_policy = leave blank/NaN; never replace with zero
+```
+
+动态特征阶段不读取妊娠结局，也不根据AUC改阈值。
+================ END FILE: 01_feature_extraction/README.md ================
+
+================ BEGIN FILE: 01_feature_extraction/OUTPUT_SCHEMA.md | git_blob_sha=ec591c40df2dd0e424452a5fef77adf26660d550 ================
+# Feature extraction output schema
+
+## Formal cross-module contract
+
+The formal output of the locked current workflow is:
+
+```text
+01_feature_extraction/outputs/FINAL_DYNAMIC_FEATURES.csv
+```
+
+It is produced by the unchanged frozen runtime:
+
+```text
+01_feature_extraction/frozen_runtime_20261126/run_final_batch.py
+```
+
+through the repository wrapper:
+
+```text
+01_feature_extraction/run_feature_extraction.py
+```
+
+The wrapper copies the exact frozen `FINAL_DYNAMIC_FEATURES.csv` to the stable
+module output path. It does not recalculate, impute, tune or filter features.
+
+`auto_features.csv` is now **compatibility only**. `export_auto_features.py`
+may generate it as a projected/renamed subset for older code, but the formal
+source of truth is `FINAL_DYNAMIC_FEATURES.csv`.
+
+## Main fields used by longitudinal analysis
+
+| canonical longitudinal field | source in FINAL_DYNAMIC_FEATURES.csv | meaning |
+|---|---|---|
+| exam_id | case_id | examination ID |
+| anterior_amplitude | anterior_amplitude | anterior radial stretch activity amplitude |
+| posterior_amplitude | posterior_amplitude | posterior radial stretch activity amplitude |
+| r2_frequency_cpm | R2_frequency_cpm | current frozen posterior longitudinal R2 |
+| anterior_er | anterior_ER_mean_paired | anterior ER summary over paired windows |
+| posterior_er | posterior_ER_mean_paired | posterior ER summary over paired windows |
+| mse | record_MSE_time_equal | time-equal record ER-MSE |
+| m1_prop_rate_min_per_min | m1_prop_rate_min_per_min | lower-bound significant propagation activity rate |
+| tracking_valid_fraction | raw_valid_fraction | A0 raw usable support fraction |
+
+The longitudinal loader maps `case_id -> exam_id` exactly and requires one row
+per examination. It does not use name-based fuzzy matching.
+
+## QC / provenance retained when available
+
+The master table also retains current-workflow status fields such as:
+
+- pipeline_version
+- a0_status
+- anterior_amplitude_status / posterior_amplitude_status
+- mse_status / mse_decomposition_status
+- record_MSE_z and MSE decomposition terms
+- m1_status / m1_failure_reason / m1_algorithm_version
+- m1_prop_rate_max_per_min / count range / effective observation time
+- R2_status / R2_failure_reason / R2_version
+- R2_retained_posterior_region_count
+
+## Missing-data rule
+
+Measurement failure is never converted to zero.
+
+```text
+tracking failure != 0
+R2 failure      != 0 cpm
+M1 no support   != 0 activity/min
+MSE unavailable != 0
+amplitude fail  != 0
+```
+
+Missing or failed measurements remain blank / NaN with status and failure
+reason where the frozen workflow provides them.
+
+## Interpretation boundaries
+
+- **R2** = local wall-tangent tissue-motion dominant frequency candidate.
+- **M1** = significant propagation-activity candidate rate.
+- **ER** = directional-energy representation.
+- **MSE** = anterior/posterior ER coordination/difference candidate.
+- **Amplitude** = radial stretch activity amplitude.
+
+None of these automatically equals a confirmed physiological peristaltic-wave
+count or externally validated clinical biomarker.
+
+## Outcome blindness
+
+The formal feature-extraction workflow is outcome blind. Its locked spec states:
+
+```text
+outcomes_read = false
+```
+
+Pregnancy outcomes enter only in the longitudinal/statistical module.
+================ END FILE: 01_feature_extraction/OUTPUT_SCHEMA.md ================
+
+================ BEGIN FILE: 01_feature_extraction/SOURCE_PROVENANCE.md | git_blob_sha=d7e58744a88e812414e425575ecaac44dae0a407 ================
+# Feature extraction source provenance
+
+本目录遵循一个原则：**迁移并锁定已有测量实现，不根据临床结局重写测量算法。**
+
+## 1. Formal integrated runtime
+
+当前正式动态特征运行时位于：
+
+```text
+01_feature_extraction/frozen_runtime_20261126/
+```
+
+当前工作流版本：
+
+```text
+UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1
+```
+
+锁文件：
+
+- `frozen_runtime_20261126/SOURCE_LOCK.json`
+- `frozen_runtime_20261126/FINAL_PIPELINE_SPEC.json`
+
+该 runtime 整合当前 A0 / amplitude / ER / record MSE / M1 / R2 生产链。
+特征计算阶段明确：
+
+```text
+outcomes_read = false
+```
+
+## 2. P3 / radial tracking source
+
+独立 P3 / radial tracking 源码来源：
+
+- `wyxwyx357-del/uterine-tracking`
+- 该仓库记录的原始迁移基线：
+  `wyxwyx357-del/end@a9cf11b95293e395e0a90a1e3340393d782a2d5d`
+
+保留位置：
+
+- `tracking/peristalsis_pipeline/`
+- `tracking/entrypoints/`
+- `tracking/MIGRATION_MANIFEST_SOURCE.md`
+
+这套独立追踪源码用于来源审计和既有 P3 链复现，不应在未验证的情况下与 integrated runtime 中的 A0/R2 tracking 互相替换。
+
+## 3. A0 / amplitude / ER source
+
+研究包来源：
+
+- `wyxwyx357-del/uterine-wave-propagation-features`
+
+可读源码保留在：
+
+- `wave_features/uterine_wave/`
+
+正式 integrated runtime 同时保留它锁定的原包路径：
+
+- `frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/`
+- `frozen_runtime_20261126/uterine_wave/`
+
+主要包括 geometry、CUDA LK tracking、deformation、amplitude、spectrum、modes、patient、radial_events、quality 等。
+
+## 4. Frozen M1 / record MSE
+
+M1 正式版本：
+
+```text
+m1-global-pairing-unseen-v1
+```
+
+来源提交记录在 current `SOURCE_LOCK.json` 中。
+
+仓库中保留：
+
+- `m1/frozen_source/`
+- `er_mse/frozen_source/`
+- `frozen_m1_mse_bundle/`
+
+正式生产运行优先使用 `frozen_runtime_20261126/` 中由 `SOURCE_LOCK.json` 锁定的依赖，避免人工拼接不同快照。
+
+## 5. R2 current workflow
+
+当前正式 R2 不再视为“源码缺失”。
+
+正式 current workflow 位于：
+
+```text
+01_feature_extraction/frozen_runtime_20261126/r2_frozen/
+```
+
+版本：
+
+```text
+R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106
+```
+
+版本/源锁：
+
+- `frozen_runtime_20261126/r2_frozen/FROZEN_SPEC.json`
+- `frozen_runtime_20261126/SOURCE_LOCK.json`
+
+当前主 R2 定义：
+
+- local wall tangent，cervix → fundus；
+- 0.5–5.0 cpm；
+- frequency grid step 0.05 cpm；
+- posterior wall only；
+- high-confidence + independently validated stable-medium regions；
+- 对可用 posterior cervical / middle / fundal region 的 `optimized_candidate_frequency_cpm` 做等权平均；
+- 无可用 posterior region 时保持 missing，不写 0。
+
+正式检查级字段：
+
+```text
+R2_frequency_cpm
+```
+
+### Historical SHA boundary
+
+2026-11-26 曾尝试恢复更早的 historical requested SHA 集。current workflow 与其中部分文件并非同 SHA，例如 `run_local_motion_frequency.py`。
+
+因此：
+
+> current workflow 是当前锁定工作流，不声称恢复或逐字等同于 historical requested SHA set。
+
+历史旧 SHA 仅作为审计记录保存，不是当前生产锁。当前生产锁以 `SOURCE_LOCK.json` 为准。
+
+## 6. Formal output
+
+current runtime 生成：
+
+```text
+FINAL_DYNAMIC_FEATURES.csv
+```
+
+仓库包装入口：
+
+```text
+01_feature_extraction/run_feature_extraction.py
+```
+
+会把 frozen runtime 的结果原样发布到：
+
+```text
+01_feature_extraction/outputs/FINAL_DYNAMIC_FEATURES.csv
+```
+
+`auto_features.csv` 仅为旧代码兼容投影，不再是正式 source of truth。
+
+## 7. Data governance
+
+不得向公开仓库提交患者姓名、医院ID、视频、DICOM、患者级 tracking/NPZ、临床原表或本地 outputs。
+================ END FILE: 01_feature_extraction/SOURCE_PROVENANCE.md ================
+
+================ BEGIN FILE: 01_feature_extraction/ENGINEERING_FIXES_20261126.md | git_blob_sha=e4a0e3aef69b1eb155e0c64f2dacc4da618a78dd ================
+# Engineering hardening after Gemini final audit — 2026-11-26
+
+Revision:
+
+```text
+20261126_gemini_audit_fix1
+```
+
+This revision is intentionally limited to orchestration, identity preservation,
+input validation and reproducibility safeguards. It does **not** change the
+locked mathematical definitions or thresholds of A0, amplitude, ER, MSE, M1 or
+R2.
+
+## Fixed BLOCKER 1 — source-lock verification
+
+- corrected `verify_environment.py` so `SOURCE_LOCK.json` paths are resolved
+  relative to `frozen_runtime_20261126/`, where the locked source actually lives;
+- added repository `.gitattributes` with LF line endings for text source files;
+- hash verification canonicalizes text line endings to LF, preventing Windows
+  `core.autocrlf` from producing false source-lock failures;
+- added `01_feature_extraction/PIPELINE_ORCHESTRATION_LOCK.json` for the formal
+  entry/wrapper/spec files that were previously outside `SOURCE_LOCK.json`.
+
+## Fixed BLOCKER 2 — one R2 case must not abort the cohort
+
+- `r2_frozen/run_tracking_batch.py` now merges all successfully completed cases
+  even when other cases fail;
+- failed cases are recorded in `merged_results/failed_cases.csv` and in
+  `resumable_status.json`;
+- downstream cache discovery ignores caches from cases whose tracking state is
+  not `complete`;
+- `run_final_batch.py` carries failed/invalid R2 cases forward as
+  `R2_frequency_cpm = NaN` plus `R2_status` and `R2_failure_reason`;
+- an unexpected whole-stage R2 exception is isolated from A0/M1/MSE so the final
+  examination table can still be produced with explicit R2 failure status.
+
+No failed R2 measurement is replaced by zero.
+
+## Fixed BLOCKER 3 — case/exam ID type stability
+
+- manifest `case_id` remains a string from CSV input onward;
+- R2 pandas CSV readers explicitly preserve `case_id` as string;
+- compatibility export preserves `case_id` before renaming to `exam_id`;
+- longitudinal clinical/feature merge preserves exam identifiers as strings;
+- dynamic feature rows whose exam IDs do not exist in the clinical table now
+  raise an explicit error instead of being silently dropped.
+
+This protects identifiers such as `00123` from accidental conversion to
+`123`.
+
+## Fixed MAJOR — relative manifest paths
+
+Formal manifest path fields are resolved relative to the manifest file's own
+directory before A0/R2 processing:
+
+- video
+- annotation
+- pose
+- a0_spacetime_cache
+- r2_tracking
+- r2_nodes
+
+R2 therefore receives absolute paths even when the user supplies portable
+relative manifest paths.
+
+## Explicit geometry preflight
+
+The current R2 algorithm still has its existing source-video geometry
+requirement:
+
+```text
+1260 x 910
+```
+
+This algorithmic assumption was **not changed**. Instead,
+`verify_tracking_inputs.py` now reports
+`unsupported_video_geometry:<width>x<height>;expected_1260x910` before
+tracking. The incompatible case is isolated rather than allowed to crash the
+cohort.
+
+Changing the R2 background ROI or geometry normalization would be a measurement
+algorithm change and is outside this engineering revision.
+
+## Formal manifest cleanup
+
+The formal manifest template no longer advertises
+`a0_tracks_cache` / `a0_layout_cache`, because the formal
+`run_final_batch.py` does not consume them.
+
+The deprecated broken `run_final_batch_full.py` wrapper was removed from the
+formal runtime. Git history retains it for audit.
+
+## Lock state after fixes
+
+- orchestration lock: verified against current Git blob SHAs;
+- modified R2 source files: verified against current canonical-LF SHA256 values
+  in `SOURCE_LOCK.json`;
+- `algorithm_definition_unchanged = true` is recorded in the lock/spec.
+
+## Still intentionally unchanged
+
+The following were **not** modified:
+
+- A0 tracking parameters;
+- amplitude definition;
+- ER 20 s / 0.5–5 cpm directional spectrum definition;
+- record MSE formulas;
+- M1 thresholds/identity/count definition;
+- R2 0.5–5.0 cpm grid and 0.05 cpm step;
+- R2 fixed-point/continuous-segment rules;
+- R2 high + validated-stable-medium retention;
+- final posterior retained-region equal-mean aggregation;
+- R2 hard-coded background ROI / source geometry algorithm.
+
+## Required local validation before full patient batch
+
+On the target CUDA machine, run:
+
+```bash
+python 01_feature_extraction/frozen_runtime_20261126/verify_environment.py
+python 01_feature_extraction/frozen_runtime_20261126/preflight_tests.py
+```
+
+Then perform a small engineering pilot containing at least:
+
+1. one normal case;
+2. one deliberately invalid/failed R2 case;
+3. one string ID with leading zero, e.g. `00123`;
+4. one manifest using relative paths.
+
+Expected behavior: the valid cases continue, failed measurements remain NaN
+with status/reason, IDs remain exact strings, and
+`FINAL_DYNAMIC_FEATURES.csv` is still produced.
+================ END FILE: 01_feature_extraction/ENGINEERING_FIXES_20261126.md ================
+
+================ BEGIN FILE: 01_feature_extraction/PIPELINE_ORCHESTRATION_LOCK.json | git_blob_sha=ba6df2d19067a22dc91d35e1b546a02d7015af0b ================
+{
+  "lock_version": "PIPELINE_ORCHESTRATION_LOCK_20261126_FIX1",
+  "purpose": "Formal feature-extraction orchestration only; algorithm definitions remain locked separately in frozen_runtime_20261126/SOURCE_LOCK.json",
+  "algorithm_definition_unchanged": true,
+  "git_blob_sha1": {
+    "01_feature_extraction/run_feature_extraction.py": "1f48f4f6ec2c20e12ee734b39eefee747e011bf7",
+    "01_feature_extraction/export_auto_features.py": "69628060ee7dec25572f692e083d5dacb36f289b",
+    "01_feature_extraction/frozen_runtime_20261126/run_final_batch.py": "1e229010bf85b3864e0a388a1194b4ead336186f",
+    "01_feature_extraction/frozen_runtime_20261126/verify_environment.py": "ade09ea4e2995779e09e3127a37addc4f219ccb6",
+    "01_feature_extraction/frozen_runtime_20261126/preflight_tests.py": "54f29b676c26d0254053381496e9daed299ba948",
+    "01_feature_extraction/frozen_runtime_20261126/FINAL_PIPELINE_SPEC.json": "9dd5c540f35fec92be4d06ca4d7c044c50f85c9a",
+    "01_feature_extraction/frozen_runtime_20261126/SOURCE_LOCK.json": "20a9843cd506d8c646c30e1ee1f3c2a082db4194",
+    "01_feature_extraction/frozen_runtime_20261126/manifest_template.csv": "afbdac923869a5c301e50bfbd01f8de6537d4e0e"
+  }
+}
+================ END FILE: 01_feature_extraction/PIPELINE_ORCHESTRATION_LOCK.json ================
+
+================ BEGIN FILE: 01_feature_extraction/run_feature_extraction.py | git_blob_sha=1f48f4f6ec2c20e12ee734b39eefee747e011bf7 ================
+#!/usr/bin/env python3
+"""Run the frozen dynamic pipeline and publish the formal feature table.
+
+The frozen runtime is invoked unchanged. This wrapper does not recalculate,
+impute, tune or filter dynamic features. It only:
+1) runs the locked current workflow;
+2) copies FINAL_DYNAMIC_FEATURES.csv to the stable module output path;
+3) optionally writes the legacy auto_features.csv compatibility projection.
+
+Pregnancy outcomes are never read here.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+
+ROOT = Path(__file__).resolve().parent
+RUNTIME = ROOT / "frozen_runtime_20261126"
+FROZEN_ENTRY = RUNTIME / "run_final_batch.py"
+EXPORTER = ROOT / "export_auto_features.py"
+FORMAL_OUTPUT = ROOT / "outputs" / "FINAL_DYNAMIC_FEATURES.csv"
+LEGACY_OUTPUT = ROOT / "outputs" / "auto_features.csv"
+
+
+def atomic_copy(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp = destination.with_suffix(destination.suffix + ".tmp")
+    shutil.copyfile(source, tmp)
+    os.replace(tmp, destination)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument(
+        "--work-dir",
+        type=Path,
+        default=ROOT / "outputs" / "frozen_run",
+        help="Internal frozen-runtime work directory; use a new directory for a new formal run.",
+    )
+    parser.add_argument(
+        "--final-features",
+        type=Path,
+        default=FORMAL_OUTPUT,
+        help="Stable formal output consumed by longitudinal analysis.",
+    )
+    parser.add_argument(
+        "--compat-auto-features",
+        type=Path,
+        default=LEGACY_OUTPUT,
+        help="Optional legacy projected alias; set to an empty string is not supported.",
+    )
+    parser.add_argument("--no-compat-auto-features", action="store_true")
+    parser.add_argument("--r2-workers", type=int, default=1)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--skip-r2", action="store_true")
+    parser.add_argument("--skip-a0", action="store_true")
+    args = parser.parse_args()
+
+    if not FROZEN_ENTRY.is_file():
+        raise FileNotFoundError(FROZEN_ENTRY)
+    if not args.manifest.is_file():
+        raise FileNotFoundError(args.manifest)
+
+    env = os.environ.copy()
+    previous = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        str(RUNTIME)
+        if not previous
+        else str(RUNTIME) + os.pathsep + previous
+    )
+
+    command = [
+        sys.executable,
+        str(FROZEN_ENTRY),
+        "--manifest",
+        str(args.manifest.resolve()),
+        "--output",
+        str(args.work_dir.resolve()),
+        "--r2-workers",
+        str(args.r2_workers),
+    ]
+    if args.resume:
+        command.append("--resume")
+    if args.skip_r2:
+        command.append("--skip-r2")
+    if args.skip_a0:
+        command.append("--skip-a0")
+
+    result = subprocess.run(command, cwd=RUNTIME, env=env, check=False)
+    if result.returncode != 0:
+        return result.returncode
+
+    frozen_table = args.work_dir / "FINAL_DYNAMIC_FEATURES.csv"
+    if not frozen_table.is_file():
+        raise FileNotFoundError(
+            f"Frozen run completed without expected table: {frozen_table}"
+        )
+
+    # Preserve the exact frozen table as the formal cross-module contract.
+    atomic_copy(frozen_table, args.final_features)
+
+    # Compatibility only: projected/renamed subset for older scripts.
+    if not args.no_compat_auto_features:
+        export = subprocess.run(
+            [
+                sys.executable,
+                str(EXPORTER),
+                "--input",
+                str(args.final_features.resolve()),
+                "--output",
+                str(args.compat_auto_features.resolve()),
+            ],
+            cwd=ROOT,
+            env=env,
+            check=False,
+        )
+        if export.returncode != 0:
+            return export.returncode
+
+    print(f"formal_features={args.final_features.resolve()}")
+    if not args.no_compat_auto_features:
+        print(f"compat_auto_features={args.compat_auto_features.resolve()}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+================ END FILE: 01_feature_extraction/run_feature_extraction.py ================
+
+================ BEGIN FILE: 01_feature_extraction/export_auto_features.py | git_blob_sha=69628060ee7dec25572f692e083d5dacb36f289b ================
+#!/usr/bin/env python3
+"""Convert the frozen batch table to the longitudinal-analysis feature contract.
+
+This script only renames/selects fields. It does not recalculate, impute, tune,
+or filter any dynamic feature, and it never reads a pregnancy outcome.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+
+import pandas as pd
+
+
+ROOT = Path(__file__).resolve().parent
+DEFAULT_INPUT = ROOT / "outputs" / "FINAL_DYNAMIC_FEATURES.csv"
+DEFAULT_OUTPUT = ROOT / "outputs" / "auto_features.csv"
+
+RENAME = {
+    "case_id": "exam_id",
+    "R2_frequency_cpm": "r2_frequency_cpm",
+    "anterior_ER_mean_paired": "anterior_er",
+    "posterior_ER_mean_paired": "posterior_er",
+    "record_MSE_time_equal": "mse",
+    "raw_valid_fraction": "tracking_valid_fraction",
+}
+
+PRIMARY_COLUMNS = [
+    "exam_id",
+    "anterior_amplitude",
+    "posterior_amplitude",
+    "r2_frequency_cpm",
+    "anterior_er",
+    "posterior_er",
+    "mse",
+    "m1_prop_rate_min_per_min",
+    "tracking_valid_fraction",
+    "video_qc",
+    "pose_source",
+]
+
+PROVENANCE_COLUMNS = [
+    "pipeline_version",
+    "a0_status",
+    "anterior_amplitude_status",
+    "posterior_amplitude_status",
+    "mse_status",
+    "mse_decomposition_status",
+    "m1_status",
+    "m1_failure_reason",
+    "m1_algorithm_version",
+    "R2_status",
+    "R2_failure_reason",
+    "R2_retained_posterior_region_count",
+    "record_MSE_z",
+    "record_mean_bias_sq",
+    "record_sd_scale_sq",
+    "record_time_shape_term",
+    "effective_observation_seconds",
+    "m1_prop_count_min",
+    "m1_prop_count_max",
+]
+
+
+def sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def atomic_csv(frame: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    frame.to_csv(tmp, index=False)
+    os.replace(tmp, path)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    args = parser.parse_args()
+
+    if not args.input.is_file():
+        raise FileNotFoundError(args.input)
+
+    source = pd.read_csv(args.input, dtype={"case_id": str})
+    source["case_id"] = source["case_id"].astype(str).str.strip()
+    if "case_id" not in source.columns:
+        raise ValueError("Frozen table must contain case_id")
+    if source["case_id"].isna().any():
+        raise ValueError("case_id contains missing values")
+    if source["case_id"].astype(str).str.strip().eq("").any():
+        raise ValueError("case_id contains blank values")
+    if source["case_id"].duplicated().any():
+        raise ValueError("case_id must be unique in FINAL_DYNAMIC_FEATURES.csv")
+
+    output = source.rename(columns=RENAME).copy()
+
+    # Keep a stable schema. Empty technical metadata stays missing; it is never
+    # synthesized from unrelated status fields.
+    for column in PRIMARY_COLUMNS:
+        if column not in output.columns:
+            output[column] = pd.NA
+
+    keep = PRIMARY_COLUMNS + [
+        column for column in PROVENANCE_COLUMNS
+        if column in output.columns and column not in PRIMARY_COLUMNS
+    ]
+    output = output[keep].copy()
+
+    # Numeric coercion preserves failed/missing measurements as NaN.
+    numeric = [
+        "anterior_amplitude",
+        "posterior_amplitude",
+        "r2_frequency_cpm",
+        "anterior_er",
+        "posterior_er",
+        "mse",
+        "m1_prop_rate_min_per_min",
+        "tracking_valid_fraction",
+        "R2_retained_posterior_region_count",
+        "record_MSE_z",
+        "record_mean_bias_sq",
+        "record_sd_scale_sq",
+        "record_time_shape_term",
+        "effective_observation_seconds",
+        "m1_prop_count_min",
+        "m1_prop_count_max",
+    ]
+    for column in numeric:
+        if column in output.columns:
+            output[column] = pd.to_numeric(output[column], errors="coerce")
+
+    atomic_csv(output, args.output)
+    manifest = {
+        "clinical_outcome_read": False,
+        "operation": "field projection only; no feature recalculation or imputation",
+        "input": str(args.input.resolve()),
+        "input_sha256": sha256(args.input),
+        "output": str(args.output.resolve()),
+        "output_sha256": sha256(args.output),
+        "rows": int(len(output)),
+        "exam_id_unique": bool(output["exam_id"].is_unique),
+        "columns": list(output.columns),
+        "renamed_fields": RENAME,
+    }
+    manifest_path = args.output.with_name(args.output.stem + "_export.json")
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    print(f"rows={len(output)}")
+    print(f"output={args.output.resolve()}")
+    print(f"manifest={manifest_path.resolve()}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+================ END FILE: 01_feature_extraction/export_auto_features.py ================
+
+================ BEGIN FILE: 01_feature_extraction/r2_frequency/README.md | git_blob_sha=e011d6afe44d5bd1d8920a08a8d12ea251972dff ================
+# R2 local wall-tangent dominant frequency
+
+R2 是独立测量链，不由 amplitude、ER、MSE 或 M1 推导。
+
+```text
+已有 video + R2 tracking seed + nodes + pixel scale
+→ R2 re-tracking
+→ background rigid correction
+→ cervix-to-fundus local wall-tangent displacement
+→ 0.5–5 cpm candidate fitting
+→ technical/reproducibility rules
+→ retained posterior regions
+→ R2_frequency_cpm
+```
+
+## Current formal implementation
+
+真正的 current R2 源码位于：
+
+```text
+../frozen_runtime_20261126/r2_frozen/
+```
+
+不要在本目录再维护第二套复制源码。
+
+版本：
+
+```text
+R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106
+```
+
+对应锁文件：
+
+```text
+../frozen_runtime_20261126/r2_frozen/FROZEN_SPEC.json
+../frozen_runtime_20261126/SOURCE_LOCK.json
+```
+
+## Current primary definition
+
+- motion direction: local wall tangent, cervix → fundus
+- frequency band: 0.5–5.0 cpm
+- grid step: 0.05 cpm
+- formal wall: posterior only
+- primary regions: high confidence + independently validated stable medium
+- spatial regions: cervical / middle / fundal
+- exam-level aggregation: equal mean over retained posterior regions
+
+正式检查级字段：
+
+```text
+R2_frequency_cpm
+```
+
+如果没有任何 retained posterior region：
+
+```text
+R2_frequency_cpm = NaN
+R2_status = no_retained_posterior_region
+```
+
+失败不写成 0 cpm。
+
+## Not the historical three-window statistic
+
+当前纵向项目的正式 `R2_frequency_cpm` **不是**：
+
+- anterior+posterior 六区中位数；
+- 三个60秒窗口频率中位数；
+- 最长连续段统计量；
+- M1活动率；
+- 临床人工蠕动次数。
+
+历史定义可用于旧研究结果解释，但不能与 current R2 字段混用。
+
+## Historical requested SHA audit
+
+此前恢复过一组 historical requested SHA，但没有完整找回。那组 SHA 不是 current production lock。
+
+历史审计记录保留为：
+
+```text
+HISTORICAL_REQUESTED_SOURCE_HASHES.json
+```
+
+current workflow 的权威来源锁始终是：
+
+```text
+../frozen_runtime_20261126/SOURCE_LOCK.json
+```
+
+## Outcome blindness
+
+R2/current dynamic measurement chain 不读取妊娠结局，不以 AUC 或结局优化频率阈值。
+================ END FILE: 01_feature_extraction/r2_frequency/README.md ================
