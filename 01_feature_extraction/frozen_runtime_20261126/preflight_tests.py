@@ -2,7 +2,7 @@ from __future__ import annotations
 import importlib.util, json, sys
 from pathlib import Path
 import numpy as np
-ROOT=Path(__file__).resolve().parents[1]
+ROOT=Path(__file__).resolve().parent
 if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
 from analysis.mse_pregnancy_association.code.measurement.deformation import interval_support
 from analysis.mse_pregnancy_association.code.record_mse_core import summarize_paired_windows
