@@ -3,91 +3,171 @@
 本模块负责：
 
 ```text
-原始超声视频
-→ 追踪 / 运动校正
-→ 局部运动表征
-→ 幅度 / ER / MSE / M1 / R2
-→ QC
-→ 自动特征表
+视频 / 既有 tracking / nodes
+→ tracking / motion correction
+→ local motion representation
+→ amplitude / ER / MSE / M1 / R2
+→ QC / status / provenance
+→ FINAL_DYNAMIC_FEATURES.csv
 ```
 
-## 当前迁移状态
+## Formal production runtime
 
-### 已迁入
+当前正式 integrated runtime：
 
-1. **P3 / radial tracking**
-   - 来源：`wyxwyx357-del/uterine-tracking`
-   - 路径：`tracking/peristalsis_pipeline/`
-   - 原追踪入口：`tracking/entrypoints/`
-   - 来源迁移清单：`tracking/MIGRATION_MANIFEST_SOURCE.md`
+```text
+frozen_runtime_20261126/
+```
 
-2. **A0 / radial deformation / amplitude / ER / mode features**
-   - 来源：`wyxwyx357-del/uterine-wave-propagation-features`
-   - 路径：`wave_features/uterine_wave/`
-   - 冻结入口：`wave_features/run_frozen_features.py`
+版本：
 
-3. **Frozen M1 / record MSE**
-   - 来源分支：`m1-global-pairing-unseen-v1-source-20261126`
-   - 功能副本：`m1/frozen_source/`、`er_mse/frozen_source/`
-   - 原包结构：`frozen_m1_mse_bundle/`
+```text
+UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1
+```
 
-### 尚未迁入
+锁文件：
 
-4. **R2 local dominant frequency**
-   - 当前只恢复到冻结源码文件名与 SHA256；
-   - Python 源文件本体当前不可访问，因此没有根据报告重写；
-   - 校验清单：`r2_frequency/EXPECTED_SOURCE_HASHES.json`
+```text
+frozen_runtime_20261126/SOURCE_LOCK.json
+frozen_runtime_20261126/FINAL_PIPELINE_SPEC.json
+```
 
-详细来源见 [SOURCE_PROVENANCE.md](SOURCE_PROVENANCE.md)。
+该 runtime 是当前工作流的正式执行来源。不要把 `wave_features/`、`m1/frozen_source/` 或独立 P3 仓库中的文件人工拼成另一条生产主链。
 
-## 运行 wave feature 包
+## Current R2 is present
+
+R2 current workflow 已完整存在：
+
+```text
+frozen_runtime_20261126/r2_frozen/
+```
+
+版本：
+
+```text
+R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106
+```
+
+正式 exam-level R2：
+
+```text
+retained posterior cervical/middle/fundal optimized frequency
+→ equal mean
+→ R2_frequency_cpm
+```
+
+无 retained posterior region 时保持 NaN，并输出 R2 status/failure reason。
+
+历史 requested SHA 不是 current production lock；详见：
+
+```text
+r2_frequency/HISTORICAL_REQUESTED_SOURCE_HASHES.json
+```
+
+current production lock 始终以：
+
+```text
+frozen_runtime_20261126/SOURCE_LOCK.json
+```
+
+为准。
+
+## Formal run
+
+manifest 模板：
+
+```text
+frozen_runtime_20261126/manifest_template.csv
+```
+
+入口：
 
 ```bash
-cd 01_feature_extraction/wave_features
-python -m pip install -e .
+python 01_feature_extraction/run_feature_extraction.py \
+  --manifest <manifest.csv> \
+  --work-dir 01_feature_extraction/outputs/frozen_run \
+  --r2-workers 1
 ```
 
-CUDA LK 需要带 `cudaoptflow` 的 CUDA OpenCV。普通 `opencv-python` wheel 不等价于原 CUDA 环境，不能静默回退 CPU。
+正式输出：
 
-冻结特征入口：
+```text
+outputs/FINAL_DYNAMIC_FEATURES.csv
+```
+
+兼容旧代码时才额外生成：
+
+```text
+outputs/auto_features.csv
+```
+
+可以使用 `--no-compat-auto-features` 关闭兼容投影。
+
+## Input expectations
+
+combined current workflow 的 manifest 可以包含：
+
+```text
+case_id
+video
+annotation
+pose
+time_factor
+a0_spacetime_cache
+a0_tracks_cache
+a0_layout_cache
+r2_tracking
+r2_nodes
+mm_per_processed_pixel
+```
+
+A0 若已有完整 spacetime cache 可复用；否则需要 video + annotation + pose。
+
+R2 需要现有 video + R2 tracking seed + nodes + pixel scale。当前工作流不会自动生成缺失的 R2 输入。
+
+## Main feature fields
+
+- anterior_amplitude
+- posterior_amplitude
+- anterior_ER_mean_paired
+- posterior_ER_mean_paired
+- record_MSE_time_equal
+- m1_prop_rate_min_per_min
+- R2_frequency_cpm
+- raw_valid_fraction
+
+同时保留 status、failure reason、MSE decomposition、M1 count range、R2 retained region count 等。
+
+字段契约见 [OUTPUT_SCHEMA.md](OUTPUT_SCHEMA.md)。
+
+## Independent source archives
+
+为可追溯性，仓库仍保留：
+
+- `tracking/`：独立 P3/radial tracking 迁移源码；
+- `wave_features/`：A0/radial wave research package；
+- `m1/frozen_source/`、`er_mse/frozen_source/`：功能分类副本；
+- `frozen_m1_mse_bundle/`：原 import 路径结构。
+
+这些用于审计/复现来源，不取代 formal integrated runtime。
+
+## Environment
 
 ```bash
-python run_frozen_features.py audit ...
-python run_frozen_features.py run ...
+python -m pip install -r 01_feature_extraction/frozen_runtime_20261126/requirements.txt
 ```
 
-具体参数沿用源码入口和原仓库说明。
+requirements 故意不安装普通 `opencv-python`。
 
-## P3 tracking
+必须保留 CUDA-enabled OpenCV with `cudaoptflow`。环境不满足时停止，不能换算法。
 
-P3 追踪保持原独立实现。源码在：
+## Outcome blindness and missing data
+
+current spec：
 
 ```text
-tracking/peristalsis_pipeline/
+outcomes_read = false
+missing_policy = leave blank/NaN; never replace with zero
 ```
 
-完整追踪入口在：
-
-```text
-tracking/entrypoints/run_tracking_only_pipeline.py
-```
-
-该分支和 wave_features 中的 A0 tracking 不是“同一个文件换名字”，不得在不验证的情况下互相替换。
-
-## 输出到纵向分析
-
-纵向模块的目标输入仍为：
-
-```text
-01_feature_extraction/outputs/auto_features.csv
-```
-
-目前各冻结分支已经能产生各自原始结果，但**统一 auto_features.csv 的最终聚合器尚未冻结**。在 R2 源码到位前，不应假装已经形成“所有动态特征一键导出”的最终生产链。
-
-## 数据边界
-
-- 不读取妊娠结局来调整追踪/特征算法；
-- 缺失保持缺失，不补 0；
-- 不跨失追、reanchor、segment/pose epoch 断点拼接；
-- R2、M1、ER/MSE 各自保持原定义边界；
-- 患者数据和本地输出不提交 Git。
+动态特征阶段不读取妊娠结局，也不根据AUC改阈值。
