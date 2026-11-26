@@ -1,6 +1,7 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parent
 DATA_RAW = ROOT / "data_raw"
 OUTPUTS = ROOT / "outputs"
 TABLES = OUTPUTS / "tables"
@@ -12,7 +13,7 @@ CLINICAL_SHEET = "临床数据"
 
 # Optional: one row per exam_id. If this file does not exist, the pipeline
 # still runs with clinical variables only.
-AUTO_FEATURES_CSV = DATA_RAW / "auto_features.csv"
+AUTO_FEATURES_CSV = REPO_ROOT / "01_feature_extraction" / "outputs" / "auto_features.csv"
 
 DURATION_THRESHOLD = 60.0
 
