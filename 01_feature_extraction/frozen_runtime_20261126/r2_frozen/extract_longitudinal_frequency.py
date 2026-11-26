@@ -693,7 +693,8 @@ def main() -> None:
         json.dumps(checks, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     region_file = source_run / "merged_results" / "optimized_region_frequency.csv"
-    source_regions = pd.read_csv(region_file)
+    source_regions = pd.read_csv(region_file, dtype={"case_id": str})
+    source_regions["case_id"] = source_regions["case_id"].astype(str).str.strip()
     caches = cache_map(source_run)
     expected_cases = sorted(source_regions["case_id"].astype(str).unique())
     if not expected_cases:
