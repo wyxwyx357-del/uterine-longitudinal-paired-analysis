@@ -7,10 +7,19 @@
 | canonical column | meaning |
 |---|---|
 | patient_id | 随机研究患者 ID，不得使用姓名/门诊号 |
-| exam_id | 随机检查 ID |
-| exam_date | 检查日期；如日期本身存在重识别风险，可改为相对时间 |
-| pair_order | 配对顺序：1 或 2 |
+| exam_id | 随机检查 ID；同一患者每次检查唯一 |
+| exam_order | 患者内检查顺序：1, 2, 3, ... |
 | video_duration_s | 分析视频可用时长（秒） |
+
+## 推荐时间字段
+
+| column | meaning |
+|---|---|
+| exam_date | 检查日期；如存在重识别风险，不进入公开数据 |
+| days_from_first_exam | 相对第一次检查的天数，可用于替代真实日期 |
+| days_to_transfer | 检查距移植的相对天数 |
+
+`exam_order` 是主分析所需字段。患者有多少次检查，就按真实时间顺序编号多少次，不限制为 1/2。
 
 ## 结局
 
@@ -62,7 +71,6 @@
 ## 可选混杂/质量字段
 
 建议本地保留：
-- days_to_transfer
 - treatment_protocol
 - embryo_stage
 - embryo_quality
