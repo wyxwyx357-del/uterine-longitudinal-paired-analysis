@@ -1,21 +1,29 @@
 # Tracking
 
-追踪源码已迁入。
+已迁入现有 P3 / radial tracking 源码。
 
-正式运行使用：
+## 来源
 
-```text
-../frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/
-```
+`wyxwyx357-del/uterine-tracking`
 
-其中包含 `_lk.py`、`geometry.py`、`tracking.py`、`deformation.py` 等。
+该仓库记录的原始迁移基线为：
 
-历史审计快照保留在：
+`wyxwyx357-del/end@a9cf11b95293e395e0a90a1e3340393d782a2d5d`
 
-```text
-../a0_wave_pipeline/uterine_wave/
-```
+## 代码
 
-A0 正式链保持原冻结逻辑：追踪、pose/刚体校正、连续有效段、约 2 s 径向测量；不跨无效段拼接。
+`peristalsis_pipeline/` 包含原样迁移的底层算法：
 
-本次迁移没有重新定义追踪阈值，也没有新增 outcome-driven QC。
+- tracking_lk.py
+- tracking_mesh.py
+- radial_pair_geometry.py
+- tracking_huang_fusion.py
+- tracking_huang_wall_fusion.py
+- tracking_huang_radial_pairs.py
+- p3_image_boundary_correction.py
+- p3_anatomical_position_qc.py
+- tracking_artifact_qc_v2.py
+
+`entrypoints/` 保留原运行/复核入口。
+
+来源 SHA 清单见 `MIGRATION_MANIFEST_SOURCE.md`。
