@@ -3622,3 +3622,2005 @@ if __name__ == "__main__":
   "algorithm_definition_unchanged": true
 }
 ================ END FILE: 01_feature_extraction/frozen_runtime_20261126/SOURCE_LOCK.json ================
+
+================ BEGIN FILE: 01_feature_extraction/PIPELINE_ORCHESTRATION_LOCK.json | git_blob_sha=ba6df2d19067a22dc91d35e1b546a02d7015af0b ================
+{
+  "lock_version": "PIPELINE_ORCHESTRATION_LOCK_20261126_FIX1",
+  "purpose": "Formal feature-extraction orchestration only; algorithm definitions remain locked separately in frozen_runtime_20261126/SOURCE_LOCK.json",
+  "algorithm_definition_unchanged": true,
+  "git_blob_sha1": {
+    "01_feature_extraction/run_feature_extraction.py": "1f48f4f6ec2c20e12ee734b39eefee747e011bf7",
+    "01_feature_extraction/export_auto_features.py": "69628060ee7dec25572f692e083d5dacb36f289b",
+    "01_feature_extraction/frozen_runtime_20261126/run_final_batch.py": "1e229010bf85b3864e0a388a1194b4ead336186f",
+    "01_feature_extraction/frozen_runtime_20261126/verify_environment.py": "ade09ea4e2995779e09e3127a37addc4f219ccb6",
+    "01_feature_extraction/frozen_runtime_20261126/preflight_tests.py": "54f29b676c26d0254053381496e9daed299ba948",
+    "01_feature_extraction/frozen_runtime_20261126/FINAL_PIPELINE_SPEC.json": "9dd5c540f35fec92be4d06ca4d7c044c50f85c9a",
+    "01_feature_extraction/frozen_runtime_20261126/SOURCE_LOCK.json": "20a9843cd506d8c646c30e1ee1f3c2a082db4194",
+    "01_feature_extraction/frozen_runtime_20261126/manifest_template.csv": "afbdac923869a5c301e50bfbd01f8de6537d4e0e"
+  }
+}
+================ END FILE: 01_feature_extraction/PIPELINE_ORCHESTRATION_LOCK.json ================
+
+================ BEGIN FILE: 02_longitudinal_analysis/config.py | git_blob_sha=f8a29081c39a29f2f5cbf111909d72074311aff2 ================
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parent
+DATA_RAW = ROOT / "data_raw"
+OUTPUTS = ROOT / "outputs"
+TABLES = OUTPUTS / "tables"
+FIGURES = OUTPUTS / "figures"
+
+# Current clinical workbook structure.
+CLINICAL_EXCEL = DATA_RAW / "同一患者至少两次检查有视频_含时长.xlsx"
+CLINICAL_SHEET = "临床数据"
+
+# Formal feature-extraction output. auto_features.csv is retained only as a
+# backward-compatible projected alias.
+FINAL_DYNAMIC_FEATURES_CSV = (
+    REPO_ROOT / "01_feature_extraction" / "outputs" / "FINAL_DYNAMIC_FEATURES.csv"
+)
+LEGACY_AUTO_FEATURES_CSV = (
+    REPO_ROOT / "01_feature_extraction" / "outputs" / "auto_features.csv"
+)
+
+DURATION_THRESHOLD = 60.0
+
+# candidate: >=2 video-matched examinations and >=1 examination >=60 s
+# strict:    >=2 examinations >=60 s
+ANALYSIS_COHORT = "strict"  # "strict" or "candidate"
+
+ZERO_TOL = 1e-12
+MIN_RMCORR_PATIENTS = 3
+
+MORPH_COLS = [
+    "endometrium_thickness_mm",
+    "endometrium_volume_ml",
+]
+FLOW_PRIMARY = ["vfi", "pi"]
+FLOW_SECONDARY = ["vi", "fi", "ri", "sd"]
+CLIN_MOTILITY = [
+    "clinical_total_peristalsis_rate_min",
+    "clinical_forward_rate_min",
+    "clinical_backward_rate_min",
+    "clinical_forward_ratio",
+]
+AUTO_PRIMARY = ["anterior_amplitude", "posterior_amplitude"]
+AUTO_EXPLORATORY = [
+    "r2_frequency_cpm",
+    "anterior_er",
+    "posterior_er",
+    "mse",
+    "m1_prop_rate_min_per_min",
+]
+QC_NUMERIC_COLS = [
+    "video_duration_s",
+    "tracking_valid_fraction",
+    "r2_retained_posterior_region_count",
+    "effective_observation_seconds",
+]
+
+PRIMARY_ANALYSIS_COLS = (
+    MORPH_COLS
+    + FLOW_PRIMARY
+    + ["clinical_total_peristalsis_rate_min"]
+    + AUTO_PRIMARY
+)
+SECONDARY_ANALYSIS_COLS = FLOW_SECONDARY + [
+    "clinical_forward_rate_min",
+    "clinical_backward_rate_min",
+    "clinical_forward_ratio",
+]
+EXPLORATORY_ANALYSIS_COLS = AUTO_EXPLORATORY
+ALL_CONTINUOUS_COLS = list(
+    dict.fromkeys(
+        PRIMARY_ANALYSIS_COLS
+        + SECONDARY_ANALYSIS_COLS
+        + EXPLORATORY_ANALYSIS_COLS
+    )
+)
+
+KEY_PAIRS = [
+    ("endometrium_thickness_mm", "vfi"),
+    ("endometrium_thickness_mm", "pi"),
+    ("endometrium_volume_ml", "vfi"),
+    ("vfi", "clinical_total_peristalsis_rate_min"),
+    ("vfi", "anterior_amplitude"),
+    ("vfi", "posterior_amplitude"),
+    ("pi", "anterior_amplitude"),
+    ("endometrium_thickness_mm", "anterior_amplitude"),
+]
+
+CLINICAL_COLUMN_ALIASES = {
+    "exam_id": ["检查ID"],
+    "patient_group_source": ["患者分组"],
+    "source_exam_order": ["患者内检查序号"],
+    "exam_datetime": ["检查时间"],
+    "transfer_date": ["对应移植日期", "移植日期"],
+    "cycle_id": ["移植周期ID"],
+    "clinical_pregnancy_raw": ["临床妊娠"],
+    "biochemical_pregnancy_raw": ["生化妊娠"],
+    "endometrium_thickness_mm": ["子宫内膜厚度(mm)"],
+    "endometrium_type": ["分型"],
+    "clinical_forward_rate_min": ["蠕动｜正向"],
+    "clinical_backward_rate_min": ["蠕动｜反向"],
+    "endometrium_volume_ml": ["容积(ml)"],
+    "vi": ["VI"],
+    "fi": ["FI"],
+    "vfi": ["VFI"],
+    "sd": ["子宫内膜血流参数｜S/D"],
+    "pi": ["子宫内膜血流参数｜PI"],
+    "ri": ["子宫内膜血流参数｜RI"],
+    "video_duration_s": ["匹配视频预计时长（秒）", "预计时长秒"],
+    "treatment_mode": ["治疗方式"],
+    "protocol": ["治疗方案"],
+    "cycle_type": ["周期类型"],
+    "embryo_info": ["胚胎情况"],
+    "embryo_num": ["移植胚胎数"],
+    "age": ["女方年龄", "年龄"],
+    "bmi": ["女方BMI"],
+    "cycle_link_confidence": ["周期关联可信度"],
+    "cycle_audit_status": ["临床周期独立核对状态"],
+}
+
+AUTO_COLUMN_ALIASES = {
+    "exam_id": ["exam_id", "检查ID", "record_id", "case_id"],
+    "anterior_amplitude": ["anterior_amplitude", "amp_anterior", "anterior_amp"],
+    "posterior_amplitude": ["posterior_amplitude", "amp_posterior", "posterior_amp"],
+    "r2_frequency_cpm": ["r2_frequency_cpm", "R2_frequency_cpm", "R2"],
+    "m1_prop_rate_min_per_min": ["m1_prop_rate_min_per_min", "M1"],
+    "anterior_er": [
+        "anterior_er",
+        "anterior_ER_mean_paired",
+        "anterior_ER_mean",
+        "ER_anterior",
+    ],
+    "posterior_er": [
+        "posterior_er",
+        "posterior_ER_mean_paired",
+        "posterior_ER_mean",
+        "ER_posterior",
+    ],
+    "mse": ["mse", "MSE", "record_MSE_time_equal"],
+    "tracking_valid_fraction": [
+        "tracking_valid_fraction",
+        "raw_valid_fraction",
+        "valid_track_ratio",
+        "valid_fraction",
+    ],
+    "pipeline_version": ["pipeline_version"],
+    "a0_status": ["a0_status"],
+    "anterior_amplitude_status": ["anterior_amplitude_status"],
+    "posterior_amplitude_status": ["posterior_amplitude_status"],
+    "mse_status": ["mse_status"],
+    "mse_decomposition_status": ["mse_decomposition_status"],
+    "record_mse_z": ["record_MSE_z", "record_mse_z"],
+    "record_mean_bias_sq": ["record_mean_bias_sq"],
+    "record_sd_scale_sq": ["record_sd_scale_sq"],
+    "record_time_shape_term": ["record_time_shape_term"],
+    "m1_status": ["m1_status"],
+    "m1_failure_reason": ["m1_failure_reason"],
+    "m1_algorithm_version": ["m1_algorithm_version"],
+    "m1_prop_rate_max_per_min": ["m1_prop_rate_max_per_min"],
+    "m1_prop_count_min": ["m1_prop_count_min"],
+    "m1_prop_count_max": ["m1_prop_count_max"],
+    "effective_observation_seconds": ["effective_observation_seconds"],
+    "effective_observation_minutes": ["effective_observation_minutes"],
+    "r2_status": ["R2_status", "r2_status"],
+    "r2_failure_reason": ["R2_failure_reason", "r2_failure_reason"],
+    "r2_version": ["R2_version", "r2_version"],
+    "r2_retained_posterior_region_count": [
+        "R2_retained_posterior_region_count",
+        "r2_retained_posterior_region_count",
+    ],
+    "video_qc": ["video_qc", "qc_flag", "QC"],
+    "pose_source": ["pose_source"],
+}
+
+REVIEW_COLS = [
+    "patient_id",
+    "exam_id",
+    "exam_order",
+    "exam_datetime",
+    "clinical_pregnancy",
+    "days_to_transfer",
+    "treatment_mode",
+    "protocol",
+    "cycle_type",
+    "embryo_info",
+    "embryo_num",
+    "video_duration_s",
+    "tracking_valid_fraction",
+    "a0_status",
+    "anterior_amplitude_status",
+    "posterior_amplitude_status",
+    "mse_status",
+    "m1_status",
+    "r2_status",
+    "r2_retained_posterior_region_count",
+    "video_qc",
+    "pose_source",
+]
+
+
+def resolve_dynamic_features_csv() -> Path | None:
+    if FINAL_DYNAMIC_FEATURES_CSV.is_file():
+        return FINAL_DYNAMIC_FEATURES_CSV
+    if LEGACY_AUTO_FEATURES_CSV.is_file():
+        return LEGACY_AUTO_FEATURES_CSV
+    return None
+
+
+def ensure_output_dirs() -> None:
+    TABLES.mkdir(parents=True, exist_ok=True)
+    FIGURES.mkdir(parents=True, exist_ok=True)
+
+
+def cohort_mask(df):
+    if ANALYSIS_COHORT == "strict":
+        return df["in_strict_set"].fillna(False) & df["long_video_eligible"].fillna(False)
+    if ANALYSIS_COHORT == "candidate":
+        return df["in_candidate_set"].fillna(False) & df["video_matched"].fillna(False)
+    raise ValueError("ANALYSIS_COHORT must be 'strict' or 'candidate'")
+================ END FILE: 02_longitudinal_analysis/config.py ================
+
+================ BEGIN FILE: 02_longitudinal_analysis/01_build_master_table.py | git_blob_sha=7e992645d0e822cebba641e2a4c1e89d9a50b410 ================
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+import config as cfg
+
+
+def _series_or_nan(df: pd.DataFrame, col: str) -> pd.Series:
+    if col in df.columns:
+        return df[col]
+    return pd.Series(np.nan, index=df.index)
+
+
+def _find_column(df: pd.DataFrame, aliases: list[str]) -> str | None:
+    for name in aliases:
+        if name in df.columns:
+            return name
+    return None
+
+
+def _rename_known_columns(
+    df: pd.DataFrame,
+    alias_map: dict[str, list[str]],
+    required: set[str] | None = None,
+) -> pd.DataFrame:
+    required = required or set()
+    rename = {}
+    missing_required = []
+
+    for canonical, aliases in alias_map.items():
+        found = _find_column(df, aliases)
+        if found is not None:
+            rename[found] = canonical
+        elif canonical in required:
+            missing_required.append((canonical, aliases))
+
+    if missing_required:
+        details = "; ".join(
+            f"{canonical}: expected one of {aliases}"
+            for canonical, aliases in missing_required
+        )
+        raise ValueError(f"Missing required source columns: {details}")
+
+    return df.rename(columns=rename)
+
+
+def _to_numeric(df: pd.DataFrame, cols: list[str]) -> None:
+    for col in cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+
+def _parse_yes_no(value) -> float:
+    if pd.isna(value):
+        return np.nan
+    text = str(value).strip().lower()
+    yes = {"是", "yes", "y", "1", "true", "阳性", "√"}
+    no = {"否", "no", "n", "0", "false", "阴性", "×"}
+    if text in yes:
+        return 1.0
+    if text in no:
+        return 0.0
+    return np.nan
+
+
+def _build_outcome(df: pd.DataFrame) -> None:
+    clinical = _series_or_nan(df, "clinical_pregnancy_raw")
+    biochemical = _series_or_nan(df, "biochemical_pregnancy_raw")
+
+    clinical_num = clinical.map(_parse_yes_no)
+    biochemical_num = biochemical.map(_parse_yes_no)
+
+    outcome = clinical_num.copy()
+    source = pd.Series("unknown", index=df.index, dtype="object")
+    source.loc[clinical_num.notna()] = "clinical_pregnancy"
+
+    fill_negative = outcome.isna() & (biochemical_num == 0)
+    outcome.loc[fill_negative] = 0.0
+    source.loc[fill_negative] = "biochemical_negative_fill"
+
+    df["clinical_pregnancy"] = outcome
+    df["outcome_source"] = source
+
+
+def _pseudonymize_patients(df: pd.DataFrame) -> None:
+    if df["patient_group_source"].isna().any():
+        raise ValueError("patient_group_source contains missing values.")
+
+    parsed_time = pd.to_datetime(df["exam_datetime"], errors="coerce")
+    first_time = (
+        pd.DataFrame(
+            {
+                "patient_group_source": df["patient_group_source"],
+                "exam_datetime": parsed_time,
+            }
+        )
+        .groupby("patient_group_source", dropna=False)["exam_datetime"]
+        .min()
+        .sort_values(kind="stable")
+    )
+    mapping = {
+        source: f"P{i:04d}"
+        for i, source in enumerate(first_time.index, start=1)
+    }
+    df["patient_id"] = df["patient_group_source"].map(mapping)
+
+
+def _add_time_fields(df: pd.DataFrame) -> None:
+    df["exam_datetime"] = pd.to_datetime(df["exam_datetime"], errors="coerce")
+    if "transfer_date" in df.columns:
+        df["transfer_date"] = pd.to_datetime(
+            df["transfer_date"],
+            errors="coerce",
+        )
+    else:
+        df["transfer_date"] = pd.NaT
+
+    if df["exam_datetime"].isna().any():
+        bad = df.loc[df["exam_datetime"].isna(), "exam_id"].tolist()
+        raise ValueError(f"Invalid exam_datetime for exam_id: {bad}")
+
+    df.sort_values(["patient_id", "exam_datetime", "exam_id"], inplace=True)
+    df["exam_order"] = df.groupby("patient_id").cumcount() + 1
+
+    first_exam = df.groupby("patient_id")["exam_datetime"].transform("min")
+    df["days_from_first_exam"] = (
+        df["exam_datetime"].dt.normalize() - first_exam.dt.normalize()
+    ).dt.days
+
+    df["days_to_transfer"] = (
+        df["transfer_date"].dt.normalize()
+        - df["exam_datetime"].dt.normalize()
+    ).dt.days
+
+
+def _add_motility_fields(df: pd.DataFrame) -> None:
+    fwd = pd.to_numeric(
+        _series_or_nan(df, "clinical_forward_rate_min"),
+        errors="coerce",
+    )
+    bwd = pd.to_numeric(
+        _series_or_nan(df, "clinical_backward_rate_min"),
+        errors="coerce",
+    )
+
+    both_known = fwd.notna() & bwd.notna()
+    total = pd.Series(np.nan, index=df.index, dtype="float64")
+    total.loc[both_known] = fwd.loc[both_known] + bwd.loc[both_known]
+    df["clinical_total_peristalsis_rate_min"] = total
+
+    ratio = pd.Series(np.nan, index=df.index, dtype="float64")
+    active = both_known & (total > 0)
+    ratio.loc[active] = fwd.loc[active] / total.loc[active]
+    df["clinical_forward_ratio"] = ratio
+
+    state = pd.Series(np.nan, index=df.index, dtype="object")
+    state.loc[both_known & (total == 0)] = "static"
+    state.loc[active] = "active"
+    df["clinical_motility_state"] = state
+
+
+def _add_cohort_flags(df: pd.DataFrame) -> None:
+    df["video_duration_s"] = pd.to_numeric(
+        df["video_duration_s"],
+        errors="coerce",
+    )
+    df["video_matched"] = (
+        df["video_duration_s"].notna()
+        & (df["video_duration_s"] > 0)
+    )
+    df["long_video_eligible"] = (
+        df["video_duration_s"] >= cfg.DURATION_THRESHOLD
+    )
+
+    per_patient = df.groupby("patient_id").agg(
+        matched_exam_n=("video_matched", "sum"),
+        long_exam_n=("long_video_eligible", "sum"),
+        total_exam_n=("exam_id", "nunique"),
+    )
+    per_patient["in_candidate_set"] = (
+        (per_patient["matched_exam_n"] >= 2)
+        & (per_patient["long_exam_n"] >= 1)
+    )
+    per_patient["in_strict_set"] = (
+        per_patient["long_exam_n"] >= 2
+    )
+
+    for col in [
+        "matched_exam_n",
+        "long_exam_n",
+        "total_exam_n",
+        "in_candidate_set",
+        "in_strict_set",
+    ]:
+        df[col] = df["patient_id"].map(per_patient[col])
+
+
+def _load_auto_features(path: Path) -> pd.DataFrame | None:
+    if not path.exists():
+        print(f"[INFO] Optional auto feature file not found: {path}")
+        return None
+
+    header = pd.read_csv(path, nrows=0)
+    id_columns = {
+        name: str
+        for name in ("case_id", "exam_id", "检查ID", "record_id")
+        if name in header.columns
+    }
+    auto = pd.read_csv(path, dtype=id_columns)
+    auto = _rename_known_columns(
+        auto,
+        cfg.AUTO_COLUMN_ALIASES,
+        required={"exam_id"},
+    )
+
+    if auto["exam_id"].isna().any():
+        raise ValueError("Dynamic feature table contains missing exam_id values.")
+    auto["exam_id"] = auto["exam_id"].astype(str).str.strip()
+    if auto["exam_id"].eq("").any():
+        raise ValueError("Dynamic feature table contains blank exam_id values.")
+
+    keep = ["exam_id"] + [
+        c
+        for c in cfg.AUTO_COLUMN_ALIASES
+        if c != "exam_id" and c in auto.columns
+    ]
+    auto = auto[keep].copy()
+
+    if auto["exam_id"].duplicated().any():
+        bad = auto.loc[
+            auto["exam_id"].duplicated(keep=False),
+            "exam_id",
+        ].tolist()
+        raise ValueError(
+            "AUTO_FEATURES_CSV must contain at most one row per exam_id. "
+            f"Duplicates: {bad[:20]}"
+        )
+
+    return auto
+
+
+def _build_completeness(df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for col in df.columns:
+        n = len(df)
+        available = int(df[col].notna().sum())
+        rows.append(
+            {
+                "column": col,
+                "total_n": n,
+                "available_n": available,
+                "missing_n": n - available,
+                "available_fraction": (
+                    available / n if n else np.nan
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def main() -> None:
+    cfg.ensure_output_dirs()
+
+    if not cfg.CLINICAL_EXCEL.exists():
+        raise FileNotFoundError(
+            f"Clinical workbook not found: {cfg.CLINICAL_EXCEL}\n"
+            "Place the workbook under data_raw/ or edit CLINICAL_EXCEL "
+            "in config.py."
+        )
+
+    clinical = pd.read_excel(
+        cfg.CLINICAL_EXCEL,
+        sheet_name=cfg.CLINICAL_SHEET,
+        engine="openpyxl",
+        dtype={
+            "检查ID": str,
+            "患者分组": str,
+        },
+    )
+    clinical = _rename_known_columns(
+        clinical,
+        cfg.CLINICAL_COLUMN_ALIASES,
+        required={
+            "exam_id",
+            "patient_group_source",
+            "exam_datetime",
+            "video_duration_s",
+        },
+    )
+
+    if clinical["exam_id"].isna().any():
+        raise ValueError("Clinical sheet contains missing exam_id values.")
+    clinical["exam_id"] = clinical["exam_id"].astype(str).str.strip()
+    if clinical["exam_id"].eq("").any():
+        raise ValueError("Clinical sheet contains blank exam_id values.")
+
+    if clinical["exam_id"].duplicated().any():
+        bad = clinical.loc[
+            clinical["exam_id"].duplicated(keep=False),
+            "exam_id",
+        ].tolist()
+        raise ValueError(
+            f"Clinical sheet has duplicate exam_id values: {bad[:20]}"
+        )
+
+    numeric_cols = [
+        "source_exam_order",
+        "endometrium_thickness_mm",
+        "clinical_forward_rate_min",
+        "clinical_backward_rate_min",
+        "endometrium_volume_ml",
+        "vi",
+        "fi",
+        "vfi",
+        "sd",
+        "pi",
+        "ri",
+        "video_duration_s",
+        "embryo_num",
+        "age",
+        "bmi",
+    ]
+    _to_numeric(clinical, numeric_cols)
+
+    _pseudonymize_patients(clinical)
+    _add_time_fields(clinical)
+    _build_outcome(clinical)
+    _add_motility_fields(clinical)
+    _add_cohort_flags(clinical)
+
+    feature_path = cfg.resolve_dynamic_features_csv()
+    auto = _load_auto_features(feature_path) if feature_path is not None else None
+    if auto is None:
+        print(
+            "[INFO] No dynamic feature table found. Expected formal file: "
+            f"{cfg.FINAL_DYNAMIC_FEATURES_CSV}; legacy fallback: "
+            f"{cfg.LEGACY_AUTO_FEATURES_CSV}"
+        )
+    else:
+        print(f"[INFO] Dynamic feature table: {feature_path}")
+    if auto is not None:
+        feature_only = sorted(
+            set(auto["exam_id"]) - set(clinical["exam_id"])
+        )
+        if feature_only:
+            raise ValueError(
+                "Dynamic feature table contains exam_id values absent from "
+                f"the clinical table: {feature_only[:20]}"
+            )
+
+        overlap = [
+            c
+            for c in auto.columns
+            if c != "exam_id" and c in clinical.columns
+        ]
+        if overlap:
+            clinical = clinical.drop(columns=overlap)
+        clinical = clinical.merge(
+            auto,
+            on="exam_id",
+            how="left",
+            validate="one_to_one",
+        )
+
+    preferred_cols = [
+        "patient_id",
+        "exam_id",
+        "exam_order",
+        "source_exam_order",
+        "exam_datetime",
+        "days_from_first_exam",
+        "transfer_date",
+        "days_to_transfer",
+        "cycle_id",
+        "clinical_pregnancy",
+        "outcome_source",
+        "endometrium_thickness_mm",
+        "endometrium_volume_ml",
+        "endometrium_type",
+        "vi",
+        "fi",
+        "vfi",
+        "sd",
+        "pi",
+        "ri",
+        "clinical_forward_rate_min",
+        "clinical_backward_rate_min",
+        "clinical_total_peristalsis_rate_min",
+        "clinical_forward_ratio",
+        "clinical_motility_state",
+        "anterior_amplitude",
+        "posterior_amplitude",
+        "r2_frequency_cpm",
+        "anterior_er",
+        "posterior_er",
+        "mse",
+        "m1_prop_rate_min_per_min",
+        "tracking_valid_fraction",
+        "pipeline_version",
+        "a0_status",
+        "anterior_amplitude_status",
+        "posterior_amplitude_status",
+        "mse_status",
+        "mse_decomposition_status",
+        "record_mse_z",
+        "record_mean_bias_sq",
+        "record_sd_scale_sq",
+        "record_time_shape_term",
+        "m1_status",
+        "m1_failure_reason",
+        "m1_algorithm_version",
+        "m1_prop_rate_max_per_min",
+        "m1_prop_count_min",
+        "m1_prop_count_max",
+        "effective_observation_seconds",
+        "effective_observation_minutes",
+        "r2_status",
+        "r2_failure_reason",
+        "r2_version",
+        "r2_retained_posterior_region_count",
+        "video_qc",
+        "pose_source",
+        "video_duration_s",
+        "video_matched",
+        "long_video_eligible",
+        "matched_exam_n",
+        "long_exam_n",
+        "total_exam_n",
+        "in_candidate_set",
+        "in_strict_set",
+        "treatment_mode",
+        "protocol",
+        "cycle_type",
+        "embryo_info",
+        "embryo_num",
+        "age",
+        "bmi",
+        "cycle_link_confidence",
+        "cycle_audit_status",
+    ]
+    master_cols = [
+        c for c in preferred_cols if c in clinical.columns
+    ]
+    master = clinical[master_cols].copy()
+
+    # Direct source identifiers such as name / hospital identifier are not
+    # exported. patient_id is a local pseudonymous label.
+    master.to_csv(
+        cfg.TABLES / "master_long.csv",
+        index=False,
+    )
+
+    completeness = _build_completeness(master)
+    completeness.to_csv(
+        cfg.TABLES / "data_completeness.csv",
+        index=False,
+    )
+
+    cohort_summary = (
+        master.groupby("patient_id", as_index=False)
+        .agg(
+            total_exam_n=("exam_id", "nunique"),
+            matched_exam_n=("video_matched", "sum"),
+            long_exam_n=("long_video_eligible", "sum"),
+            in_candidate_set=("in_candidate_set", "max"),
+            in_strict_set=("in_strict_set", "max"),
+        )
+        .sort_values(
+            [
+                "in_strict_set",
+                "in_candidate_set",
+                "patient_id",
+            ],
+            ascending=[False, False, True],
+        )
+    )
+    cohort_summary.to_csv(
+        cfg.TABLES / "cohort_summary.csv",
+        index=False,
+    )
+
+    candidate_not_strict = cohort_summary[
+        cohort_summary["in_candidate_set"]
+        & ~cohort_summary["in_strict_set"]
+    ].copy()
+    candidate_not_strict.to_csv(
+        cfg.TABLES / "candidate_not_strict.csv",
+        index=False,
+    )
+
+    strict_patients = int(
+        cohort_summary["in_strict_set"].sum()
+    )
+    candidate_patients = int(
+        cohort_summary["in_candidate_set"].sum()
+    )
+    strict_exams = int(
+        (
+            master["in_strict_set"]
+            & master["long_video_eligible"]
+        ).sum()
+    )
+    candidate_exams = int(
+        (
+            master["in_candidate_set"]
+            & master["video_matched"]
+        ).sum()
+    )
+
+    print("Master table built successfully.")
+    print(
+        f"candidate patients={candidate_patients}, "
+        f"candidate exams={candidate_exams}"
+    )
+    print(
+        f"strict patients={strict_patients}, "
+        f"strict >=60s exams={strict_exams}"
+    )
+    print(f"master: {cfg.TABLES / 'master_long.csv'}")
+    print(
+        f"cohort summary: "
+        f"{cfg.TABLES / 'cohort_summary.csv'}"
+    )
+
+
+if __name__ == "__main__":
+    main()
+================ END FILE: 02_longitudinal_analysis/01_build_master_table.py ================
+
+================ BEGIN FILE: 02_longitudinal_analysis/02_delta_and_qc.py | git_blob_sha=a2fa86ace3ea10d8c8b3b5d0b95838b09b29dc9f ================
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.stats import spearmanr
+
+import config as cfg
+
+
+def _load_analysis_data() -> pd.DataFrame:
+    path = cfg.TABLES / "master_long.csv"
+    if not path.exists():
+        raise FileNotFoundError("Run 01_build_master_table.py first.")
+
+    df = pd.read_csv(path)
+    mask = cfg.cohort_mask(df)
+    df = df.loc[mask].copy()
+
+    if df.empty:
+        raise ValueError(f"No rows available for cohort={cfg.ANALYSIS_COHORT}")
+
+    df["exam_datetime"] = pd.to_datetime(df["exam_datetime"], errors="coerce")
+    return df.sort_values(["patient_id", "exam_order", "exam_datetime"])
+
+
+def _numeric_present(df: pd.DataFrame) -> list[str]:
+    wanted = cfg.ALL_CONTINUOUS_COLS + cfg.QC_NUMERIC_COLS
+    present = []
+    for col in dict.fromkeys(wanted):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+            present.append(col)
+    return present
+
+
+def build_adjacent_deltas(
+    df: pd.DataFrame,
+    numeric_cols: list[str],
+) -> pd.DataFrame:
+    records = []
+
+    for patient_id, g in df.groupby("patient_id", sort=False):
+        g = g.sort_values(["exam_order", "exam_datetime", "exam_id"]).reset_index(drop=True)
+        if len(g) < 2:
+            continue
+
+        for i in range(1, len(g)):
+            prev = g.iloc[i - 1]
+            curr = g.iloc[i]
+            row = {
+                "patient_id": patient_id,
+                "from_exam_id": prev["exam_id"],
+                "to_exam_id": curr["exam_id"],
+                "from_exam_order": prev["exam_order"],
+                "to_exam_order": curr["exam_order"],
+                "from_exam_datetime": prev.get("exam_datetime"),
+                "to_exam_datetime": curr.get("exam_datetime"),
+            }
+
+            if pd.notna(prev.get("exam_datetime")) and pd.notna(curr.get("exam_datetime")):
+                row["interval_days"] = (
+                    curr["exam_datetime"] - prev["exam_datetime"]
+                ).total_seconds() / 86400.0
+            else:
+                row["interval_days"] = np.nan
+
+            for col in numeric_cols:
+                a = prev.get(col, np.nan)
+                b = curr.get(col, np.nan)
+                row[f"{col}__from"] = a
+                row[f"{col}__to"] = b
+                row[f"{col}__delta"] = (
+                    b - a if pd.notna(a) and pd.notna(b) else np.nan
+                )
+
+            records.append(row)
+
+    return pd.DataFrame.from_records(records)
+
+
+def summarize_deltas(
+    changes: pd.DataFrame,
+    analysis_cols: list[str],
+) -> pd.DataFrame:
+    rows = []
+
+    for col in analysis_cols:
+        dcol = f"{col}__delta"
+        if dcol not in changes.columns:
+            continue
+
+        use = changes[["patient_id", dcol]].dropna().copy()
+        if use.empty:
+            continue
+
+        s = use[dcol]
+        unchanged = np.isclose(s, 0.0, atol=cfg.ZERO_TOL, rtol=0.0)
+        rows.append(
+            {
+                "feature": col,
+                "interval_n": int(len(use)),
+                "patient_n": int(use["patient_id"].nunique()),
+                "median_delta": float(s.median()),
+                "q1_delta": float(s.quantile(0.25)),
+                "q3_delta": float(s.quantile(0.75)),
+                "median_abs_delta": float(s.abs().median()),
+                "increase_interval_n": int((s > cfg.ZERO_TOL).sum()),
+                "decrease_interval_n": int((s < -cfg.ZERO_TOL).sum()),
+                "unchanged_interval_n": int(unchanged.sum()),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def summarize_patient_median_direction(
+    changes: pd.DataFrame,
+    analysis_cols: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    patient_rows = []
+    summary_rows = []
+
+    for col in analysis_cols:
+        dcol = f"{col}__delta"
+        if dcol not in changes.columns:
+            continue
+
+        use = changes[["patient_id", dcol]].dropna().copy()
+        if use.empty:
+            continue
+
+        med = use.groupby("patient_id")[dcol].median()
+        for patient_id, value in med.items():
+            patient_rows.append(
+                {
+                    "patient_id": patient_id,
+                    "feature": col,
+                    "patient_median_adjacent_delta": value,
+                }
+            )
+
+        summary_rows.append(
+            {
+                "feature": col,
+                "patient_n": int(len(med)),
+                "patients_positive_median_delta": int((med > cfg.ZERO_TOL).sum()),
+                "patients_negative_median_delta": int((med < -cfg.ZERO_TOL).sum()),
+                "patients_zero_median_delta": int(
+                    np.isclose(
+                        med,
+                        0.0,
+                        atol=cfg.ZERO_TOL,
+                        rtol=0.0,
+                    ).sum()
+                ),
+            }
+        )
+
+    return pd.DataFrame(patient_rows), pd.DataFrame(summary_rows)
+
+
+def qc_delta_associations(changes: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    auto_features = cfg.AUTO_PRIMARY + cfg.AUTO_EXPLORATORY
+    qc_features = list(dict.fromkeys(cfg.QC_NUMERIC_COLS))
+
+    for feature in auto_features:
+        fx = f"{feature}__delta"
+        if fx not in changes.columns:
+            continue
+
+        for qc in qc_features:
+            qx = f"{qc}__delta"
+            if qx not in changes.columns:
+                continue
+
+            sub = changes[["patient_id", fx, qx]].dropna()
+            if len(sub) < 3:
+                continue
+            if sub[fx].nunique() < 2 or sub[qx].nunique() < 2:
+                rho = np.nan
+            else:
+                rho = float(spearmanr(sub[fx], sub[qx]).statistic)
+
+            rows.append(
+                {
+                    "dynamic_feature": feature,
+                    "qc_feature": qc,
+                    "interval_n": int(len(sub)),
+                    "patient_n": int(sub["patient_id"].nunique()),
+                    "spearman_rho_descriptive": rho,
+                    "note": "Descriptive only; repeated intervals within a patient are not independent.",
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def plot_trajectories(df: pd.DataFrame, features: list[str]) -> None:
+    outdir = cfg.FIGURES / f"02_{cfg.ANALYSIS_COHORT}_trajectories"
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    for feature in features:
+        if feature not in df.columns:
+            continue
+
+        use = df[["patient_id", "exam_order", feature]].copy()
+        use[feature] = pd.to_numeric(use[feature], errors="coerce")
+        use = use.dropna(subset=[feature])
+        if use.empty:
+            continue
+
+        fig, ax = plt.subplots(figsize=(7, 5))
+        for _, g in use.groupby("patient_id"):
+            g = g.sort_values("exam_order")
+            ax.plot(
+                g["exam_order"],
+                g[feature],
+                marker="o",
+                linewidth=1,
+                alpha=0.55,
+            )
+
+        ax.set_xlabel("Within-patient examination order")
+        ax.set_ylabel(feature)
+        ax.set_title(
+            f"{feature}: within-patient trajectories "
+            f"({cfg.ANALYSIS_COHORT} cohort)"
+        )
+        ax.grid(alpha=0.2)
+        fig.tight_layout()
+        fig.savefig(outdir / f"{feature}.png", dpi=180)
+        plt.close(fig)
+
+
+def main() -> None:
+    cfg.ensure_output_dirs()
+    df = _load_analysis_data()
+    numeric_cols = _numeric_present(df)
+
+    changes = build_adjacent_deltas(df, numeric_cols)
+    changes.to_csv(
+        cfg.TABLES / f"adjacent_deltas_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    analysis_cols = [
+        c for c in cfg.ALL_CONTINUOUS_COLS if c in df.columns
+    ]
+    delta_summary = summarize_deltas(changes, analysis_cols)
+    delta_summary.to_csv(
+        cfg.TABLES / f"delta_summary_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    patient_detail, patient_direction = summarize_patient_median_direction(
+        changes,
+        analysis_cols,
+    )
+    patient_detail.to_csv(
+        cfg.TABLES / f"patient_median_delta_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+    patient_direction.to_csv(
+        cfg.TABLES / f"patient_direction_summary_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    qc_assoc = qc_delta_associations(changes)
+    qc_assoc.to_csv(
+        cfg.TABLES / f"delta_qc_associations_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    plot_trajectories(
+        df,
+        [
+            c for c in (
+                cfg.PRIMARY_ANALYSIS_COLS
+                + cfg.EXPLORATORY_ANALYSIS_COLS
+            )
+            if c in df.columns
+        ],
+    )
+
+    print(f"cohort={cfg.ANALYSIS_COHORT}")
+    print(f"patients={df['patient_id'].nunique()}, exams={len(df)}")
+    print(f"adjacent intervals={len(changes)}")
+    print(delta_summary.to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()
+================ END FILE: 02_longitudinal_analysis/02_delta_and_qc.py ================
+
+================ BEGIN FILE: 02_longitudinal_analysis/03_module_comovement.py | git_blob_sha=296f6f306af03b85f076c37952d08cb72c5e88fb ================
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import pingouin as pg
+
+import config as cfg
+
+
+def _load_analysis_data() -> pd.DataFrame:
+    path = cfg.TABLES / "master_long.csv"
+    if not path.exists():
+        raise FileNotFoundError("Run 01_build_master_table.py first.")
+
+    df = pd.read_csv(path)
+    df = df.loc[cfg.cohort_mask(df)].copy()
+    if df.empty:
+        raise ValueError(f"No rows available for cohort={cfg.ANALYSIS_COHORT}")
+
+    df["exam_datetime"] = pd.to_datetime(df["exam_datetime"], errors="coerce")
+    for col in cfg.ALL_CONTINUOUS_COLS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "days_to_transfer" in df.columns:
+        df["days_to_transfer"] = pd.to_numeric(
+            df["days_to_transfer"],
+            errors="coerce",
+        )
+    return df.sort_values(["patient_id", "exam_order"])
+
+
+def run_rm_corr(df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+
+    for x, y in cfg.KEY_PAIRS:
+        if x not in df.columns or y not in df.columns:
+            rows.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "status": "missing_column",
+                }
+            )
+            continue
+
+        sub = df[["patient_id", x, y]].dropna().copy()
+        counts = sub.groupby("patient_id").size()
+        valid_ids = counts[counts >= 2].index
+        sub = sub[sub["patient_id"].isin(valid_ids)].copy()
+
+        n_patients = sub["patient_id"].nunique()
+        n_exams = len(sub)
+
+        if (
+            n_patients < cfg.MIN_RMCORR_PATIENTS
+            or sub[x].nunique() < 2
+            or sub[y].nunique() < 2
+        ):
+            rows.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "status": "insufficient_variation_or_patients",
+                    "n_patients": int(n_patients),
+                    "n_exams": int(n_exams),
+                }
+            )
+            continue
+
+        try:
+            result = pg.rm_corr(
+                data=sub,
+                x=x,
+                y=y,
+                subject="patient_id",
+            )
+            r = float(result["r"].iloc[0])
+            pval = float(result["pval"].iloc[0])
+            dof = float(result["dof"].iloc[0])
+            ci = result["CI95%"].iloc[0] if "CI95%" in result.columns else np.nan
+
+            rows.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "status": "ok",
+                    "n_patients": int(n_patients),
+                    "n_exams": int(n_exams),
+                    "rmcorr_r": r,
+                    "rmcorr_dof": dof,
+                    "rmcorr_p": pval,
+                    "rmcorr_ci95": str(ci),
+                    "note": (
+                        "Exploratory repeated-measures association; "
+                        "interpret with individual trajectories and clinical timing."
+                    ),
+                }
+            )
+        except (ValueError, ZeroDivisionError, np.linalg.LinAlgError) as exc:
+            rows.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "status": f"rmcorr_failed:{type(exc).__name__}",
+                    "n_patients": int(n_patients),
+                    "n_exams": int(n_exams),
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def plot_pair(df: pd.DataFrame, x: str, y: str, r: float | None) -> None:
+    sub = df[["patient_id", "exam_order", x, y]].dropna().copy()
+    counts = sub.groupby("patient_id").size()
+    sub = sub[sub["patient_id"].isin(counts[counts >= 2].index)]
+    if sub.empty:
+        return
+
+    outdir = cfg.FIGURES / f"03_{cfg.ANALYSIS_COHORT}_rmcorr"
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(6.5, 5.5))
+
+    for _, g in sub.groupby("patient_id"):
+        g = g.sort_values("exam_order")
+        ax.plot(
+            g[x],
+            g[y],
+            marker="o",
+            linewidth=1,
+            alpha=0.45,
+        )
+
+    ax.set_xlabel(x)
+    ax.set_ylabel(y)
+    title = f"{x} vs {y}: within-patient repeated measures"
+    if r is not None and np.isfinite(r):
+        title += f"\nrmcorr r={r:.3f}"
+    ax.set_title(title)
+    ax.grid(alpha=0.2)
+    fig.tight_layout()
+    fig.savefig(outdir / f"{x}__{y}.png", dpi=180)
+    plt.close(fig)
+
+
+def timing_protocol_context(df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+
+    for patient_id, g in df.groupby("patient_id"):
+        row = {
+            "patient_id": patient_id,
+            "exam_n": int(len(g)),
+        }
+
+        if "days_to_transfer" in g.columns:
+            s = pd.to_numeric(g["days_to_transfer"], errors="coerce").dropna()
+            row["days_to_transfer_min"] = s.min() if not s.empty else np.nan
+            row["days_to_transfer_max"] = s.max() if not s.empty else np.nan
+            row["days_to_transfer_range"] = (
+                s.max() - s.min() if not s.empty else np.nan
+            )
+
+        if "protocol" in g.columns:
+            row["protocol_nunique"] = int(g["protocol"].dropna().nunique())
+            row["protocol_consistent"] = (
+                g["protocol"].dropna().nunique() <= 1
+            )
+
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def endometrium_type_transition_summary(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if "endometrium_type" not in df.columns:
+        return pd.DataFrame(), pd.DataFrame()
+
+    targets = [
+        c for c in [
+            "vfi",
+            "pi",
+            "clinical_total_peristalsis_rate_min",
+            "anterior_amplitude",
+            "posterior_amplitude",
+        ]
+        if c in df.columns
+    ]
+
+    interval_rows = []
+    for patient_id, g in df.groupby("patient_id", sort=False):
+        g = g.sort_values("exam_order").reset_index(drop=True)
+        for i in range(1, len(g)):
+            a = g.iloc[i - 1]
+            b = g.iloc[i]
+            type_a = a.get("endometrium_type")
+            type_b = b.get("endometrium_type")
+            if pd.isna(type_a) or pd.isna(type_b):
+                continue
+
+            row = {
+                "patient_id": patient_id,
+                "from_exam_id": a["exam_id"],
+                "to_exam_id": b["exam_id"],
+                "type_from": type_a,
+                "type_to": type_b,
+                "type_changed": str(type_a) != str(type_b),
+            }
+
+            for col in targets:
+                va = pd.to_numeric(pd.Series([a[col]]), errors="coerce").iloc[0]
+                vb = pd.to_numeric(pd.Series([b[col]]), errors="coerce").iloc[0]
+                row[f"{col}__delta"] = (
+                    vb - va if pd.notna(va) and pd.notna(vb) else np.nan
+                )
+            interval_rows.append(row)
+
+    intervals = pd.DataFrame(interval_rows)
+    if intervals.empty:
+        return intervals, pd.DataFrame()
+
+    summary_rows = []
+    for changed, group in intervals.groupby("type_changed"):
+        for col in targets:
+            dcol = f"{col}__delta"
+            s = group[dcol].dropna()
+            if s.empty:
+                continue
+            summary_rows.append(
+                {
+                    "type_changed": bool(changed),
+                    "feature": col,
+                    "interval_n": int(len(s)),
+                    "patient_n": int(group.loc[s.index, "patient_id"].nunique()),
+                    "median_delta": float(s.median()),
+                    "q1_delta": float(s.quantile(0.25)),
+                    "q3_delta": float(s.quantile(0.75)),
+                }
+            )
+
+    return intervals, pd.DataFrame(summary_rows)
+
+
+def main() -> None:
+    cfg.ensure_output_dirs()
+    df = _load_analysis_data()
+
+    results = run_rm_corr(df)
+    results.to_csv(
+        cfg.TABLES / f"rmcorr_results_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    for _, row in results.iterrows():
+        if row.get("status") != "ok":
+            continue
+        plot_pair(
+            df,
+            row["x"],
+            row["y"],
+            row.get("rmcorr_r"),
+        )
+
+    context = timing_protocol_context(df)
+    context.to_csv(
+        cfg.TABLES / f"timing_protocol_context_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    transitions, transition_summary = endometrium_type_transition_summary(df)
+    transitions.to_csv(
+        cfg.TABLES / f"endometrium_type_transitions_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+    transition_summary.to_csv(
+        cfg.TABLES / f"endometrium_type_transition_summary_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    print(f"cohort={cfg.ANALYSIS_COHORT}")
+    print(results.to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()
+================ END FILE: 02_longitudinal_analysis/03_module_comovement.py ================
+
+================ BEGIN FILE: 02_longitudinal_analysis/04_outcome_self_control.py | git_blob_sha=b920c0fe38c8830852e74830f95a5a53359e408e ================
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.stats import wilcoxon
+
+import config as cfg
+
+
+def _load_analysis_data() -> pd.DataFrame:
+    path = cfg.TABLES / "master_long.csv"
+    if not path.exists():
+        raise FileNotFoundError("Run 01_build_master_table.py first.")
+
+    df = pd.read_csv(path)
+    df = df.loc[cfg.cohort_mask(df)].copy()
+    df["clinical_pregnancy"] = pd.to_numeric(
+        df["clinical_pregnancy"],
+        errors="coerce",
+    )
+    df = df[df["clinical_pregnancy"].isin([0, 1])].copy()
+
+    if df.empty:
+        raise ValueError("No known-outcome examinations in selected cohort.")
+
+    df["exam_datetime"] = pd.to_datetime(df["exam_datetime"], errors="coerce")
+    for col in cfg.ALL_CONTINUOUS_COLS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df.sort_values(["patient_id", "exam_order", "exam_datetime"])
+
+
+def discordant_patients(df: pd.DataFrame) -> pd.DataFrame:
+    counts = df.groupby("patient_id")["clinical_pregnancy"].nunique()
+    ids = counts[counts == 2].index
+    return df[df["patient_id"].isin(ids)].copy()
+
+
+def patient_outcome_summary(
+    df: pd.DataFrame,
+    features: list[str],
+) -> pd.DataFrame:
+    rows = []
+
+    for patient_id, g in df.groupby("patient_id", sort=False):
+        fail = g[g["clinical_pregnancy"] == 0]
+        succ = g[g["clinical_pregnancy"] == 1]
+        if fail.empty or succ.empty:
+            continue
+
+        row = {
+            "patient_id": patient_id,
+            "failure_exam_n": int(len(fail)),
+            "success_exam_n": int(len(succ)),
+        }
+
+        for col in features:
+            if col not in g.columns:
+                continue
+            f = pd.to_numeric(fail[col], errors="coerce").dropna()
+            s = pd.to_numeric(succ[col], errors="coerce").dropna()
+
+            fmed = f.median() if not f.empty else np.nan
+            smed = s.median() if not s.empty else np.nan
+
+            row[f"{col}__failure_median"] = fmed
+            row[f"{col}__success_median"] = smed
+            row[f"{col}__success_minus_failure"] = smed - fmed
+
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def feature_summary(
+    patient_summary: pd.DataFrame,
+    features: list[str],
+) -> pd.DataFrame:
+    rows = []
+
+    for col in features:
+        dcol = f"{col}__success_minus_failure"
+        if dcol not in patient_summary.columns:
+            continue
+
+        diff = pd.to_numeric(
+            patient_summary[dcol],
+            errors="coerce",
+        ).dropna()
+        if diff.empty:
+            continue
+
+        nonzero = diff[~np.isclose(diff, 0.0, atol=cfg.ZERO_TOL, rtol=0.0)]
+        if len(nonzero) >= 2:
+            try:
+                test = wilcoxon(
+                    nonzero,
+                    alternative="two-sided",
+                    method="auto",
+                )
+                pval = float(test.pvalue)
+            except ValueError:
+                pval = np.nan
+        else:
+            pval = np.nan
+
+        rows.append(
+            {
+                "feature": col,
+                "patient_n": int(len(diff)),
+                "median_success_minus_failure": float(diff.median()),
+                "q1": float(diff.quantile(0.25)),
+                "q3": float(diff.quantile(0.75)),
+                "success_higher_n": int((diff > cfg.ZERO_TOL).sum()),
+                "success_lower_n": int((diff < -cfg.ZERO_TOL).sum()),
+                "same_n": int(
+                    np.isclose(
+                        diff,
+                        0.0,
+                        atol=cfg.ZERO_TOL,
+                        rtol=0.0,
+                    ).sum()
+                ),
+                "wilcoxon_p_descriptive": pval,
+                "note": (
+                    "Exploratory only; p-value is descriptive and not a primary success criterion."
+                ),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def plot_slope(
+    patient_summary: pd.DataFrame,
+    features: list[str],
+) -> None:
+    outdir = cfg.FIGURES / f"04_{cfg.ANALYSIS_COHORT}_outcome_slope"
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    for col in features:
+        fcol = f"{col}__failure_median"
+        scol = f"{col}__success_median"
+        if fcol not in patient_summary.columns or scol not in patient_summary.columns:
+            continue
+
+        use = patient_summary[["patient_id", fcol, scol]].dropna()
+        if use.empty:
+            continue
+
+        fig, ax = plt.subplots(figsize=(6.5, 5.5))
+        for _, row in use.iterrows():
+            y0 = row[fcol]
+            y1 = row[scol]
+            if y1 > y0:
+                color = "tab:red"
+            elif y1 < y0:
+                color = "tab:blue"
+            else:
+                color = "0.5"
+
+            ax.plot(
+                [0, 1],
+                [y0, y1],
+                marker="o",
+                linewidth=1.2,
+                alpha=0.75,
+                color=color,
+            )
+
+        ax.set_xticks([0, 1], ["Failure", "Success"])
+        ax.set_ylabel(col)
+        ax.set_title(f"{col}: within-patient outcome comparison")
+        ax.grid(axis="y", alpha=0.2)
+        fig.tight_layout()
+        fig.savefig(outdir / f"{col}.png", dpi=180)
+        plt.close(fig)
+
+
+def nearest_opposite_outcome_pairs(
+    df: pd.DataFrame,
+    features: list[str],
+) -> pd.DataFrame:
+    """Choose one nearest opposite-outcome pair per patient, deterministically.
+
+    This is a sensitivity analysis only. It does not replace the all-cycle
+    patient-level median comparison.
+    """
+    rows = []
+
+    for patient_id, g in df.groupby("patient_id", sort=False):
+        g = g.sort_values(["exam_datetime", "exam_order", "exam_id"]).reset_index(drop=True)
+        candidates = []
+
+        for i in range(len(g)):
+            for j in range(i + 1, len(g)):
+                a = g.iloc[i]
+                b = g.iloc[j]
+                if a["clinical_pregnancy"] == b["clinical_pregnancy"]:
+                    continue
+
+                if pd.notna(a["exam_datetime"]) and pd.notna(b["exam_datetime"]):
+                    distance = abs(
+                        (b["exam_datetime"] - a["exam_datetime"]).total_seconds()
+                    )
+                else:
+                    distance = abs(float(b["exam_order"]) - float(a["exam_order"]))
+
+                candidates.append((distance, i, j))
+
+        if not candidates:
+            continue
+
+        _, i, j = sorted(candidates, key=lambda x: (x[0], x[1], x[2]))[0]
+        a = g.iloc[i]
+        b = g.iloc[j]
+
+        failure = a if a["clinical_pregnancy"] == 0 else b
+        success = a if a["clinical_pregnancy"] == 1 else b
+
+        row = {
+            "patient_id": patient_id,
+            "failure_exam_id": failure["exam_id"],
+            "success_exam_id": success["exam_id"],
+            "failure_exam_order": failure["exam_order"],
+            "success_exam_order": success["exam_order"],
+        }
+
+        for col in features:
+            if col not in g.columns:
+                continue
+            fv = pd.to_numeric(
+                pd.Series([failure[col]]),
+                errors="coerce",
+            ).iloc[0]
+            sv = pd.to_numeric(
+                pd.Series([success[col]]),
+                errors="coerce",
+            ).iloc[0]
+            row[f"{col}__failure"] = fv
+            row[f"{col}__success"] = sv
+            row[f"{col}__success_minus_failure"] = (
+                sv - fv if pd.notna(fv) and pd.notna(sv) else np.nan
+            )
+
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def sensitivity_feature_summary(
+    pairs: pd.DataFrame,
+    features: list[str],
+) -> pd.DataFrame:
+    rows = []
+    for col in features:
+        dcol = f"{col}__success_minus_failure"
+        if dcol not in pairs.columns:
+            continue
+        s = pd.to_numeric(pairs[dcol], errors="coerce").dropna()
+        if s.empty:
+            continue
+        rows.append(
+            {
+                "feature": col,
+                "patient_n": int(len(s)),
+                "median_success_minus_failure": float(s.median()),
+                "q1": float(s.quantile(0.25)),
+                "q3": float(s.quantile(0.75)),
+                "success_higher_n": int((s > cfg.ZERO_TOL).sum()),
+                "success_lower_n": int((s < -cfg.ZERO_TOL).sum()),
+                "same_n": int(
+                    np.isclose(
+                        s,
+                        0.0,
+                        atol=cfg.ZERO_TOL,
+                        rtol=0.0,
+                    ).sum()
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def export_review_workbook(df: pd.DataFrame) -> None:
+    cols = [c for c in cfg.REVIEW_COLS if c in df.columns]
+    extra = [
+        c for c in cfg.PRIMARY_ANALYSIS_COLS
+        if c in df.columns and c not in cols
+    ]
+    review = df[cols + extra].copy()
+
+    review_path = (
+        cfg.TABLES
+        / f"discordant_case_review_{cfg.ANALYSIS_COHORT}.xlsx"
+    )
+    with pd.ExcelWriter(review_path, engine="openpyxl") as writer:
+        review.to_excel(writer, index=False, sheet_name="all_exams")
+
+
+def main() -> None:
+    cfg.ensure_output_dirs()
+    df = _load_analysis_data()
+    disc = discordant_patients(df)
+
+    if disc.empty:
+        print("No patients with both success and failure outcomes.")
+        return
+
+    features = [
+        c for c in (
+            cfg.PRIMARY_ANALYSIS_COLS
+            + cfg.SECONDARY_ANALYSIS_COLS
+            + cfg.EXPLORATORY_ANALYSIS_COLS
+        )
+        if c in disc.columns
+    ]
+
+    disc.to_csv(
+        cfg.TABLES / f"discordant_all_exams_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    patient_summary = patient_outcome_summary(disc, features)
+    patient_summary.to_csv(
+        cfg.TABLES / f"outcome_patient_summary_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    summary = feature_summary(patient_summary, features)
+    summary.to_csv(
+        cfg.TABLES / f"outcome_feature_summary_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    plot_slope(
+        patient_summary,
+        [c for c in cfg.PRIMARY_ANALYSIS_COLS if c in disc.columns],
+    )
+
+    nearest = nearest_opposite_outcome_pairs(disc, features)
+    nearest.to_csv(
+        cfg.TABLES / f"nearest_opposite_outcome_pairs_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+    nearest_summary = sensitivity_feature_summary(nearest, features)
+    nearest_summary.to_csv(
+        cfg.TABLES / f"nearest_opposite_outcome_summary_{cfg.ANALYSIS_COHORT}.csv",
+        index=False,
+    )
+
+    export_review_workbook(disc)
+
+    print(f"cohort={cfg.ANALYSIS_COHORT}")
+    print(f"discordant patients={disc['patient_id'].nunique()}")
+    print(summary.to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()
+================ END FILE: 02_longitudinal_analysis/04_outcome_self_control.py ================
+
+================ BEGIN FILE: 02_longitudinal_analysis/docs/STUDY_DESIGN.md | git_blob_sha=3e20385741625f57e962df641fe5fd3610f7eb58 ================
+# Study design
+
+## 目标
+
+利用同一患者多次重复检查数据，探索内膜形态、血流和子宫动态运动在不同检查/周期中的联合变化。
+
+## 研究结构
+
+### A. 纵向重复检查主队列
+
+优先纳入：
+- 同一患者至少两次检查；
+- 每次对应视频可用时长 >= 60 s；
+- 检查及临床信息能够可靠对应；
+- 每次检查有明确的患者内时间顺序。
+
+患者可以有 2 次、3 次、4 次或更多检查。符合纳入条件的检查全部保留，不人为挑选两次。
+
+该队列用于：
+- 每位患者全部检查的个体轨迹；
+- 相邻两次检查的患者内变化；
+- 三类指标之间的患者内同步变化；
+- 视频质量/时长的核对。
+
+### B. 妊娠结局不一致的患者内比较
+
+在主队列中识别同时存在：
+- 至少一次临床妊娠；
+- 至少一次未临床妊娠
+
+的患者。
+
+如果患者只有一次成功和一次失败，可直接形成一对比较。
+
+如果患者存在多次成功或多次失败，不任意挑选某一对；优先保留全部检查，并在患者内部比较成功检查与失败检查的特征分布/中位水平，同时保留逐次轨迹。
+
+重点看：
+- 变化方向；
+- 患者内差值大小；
+- 个体轨迹；
+- 可能的周期/治疗/胚胎混杂。
+
+本部分属于探索性自身对照，不作为正式预测模型。
+
+## 指标分层
+
+### 优先
+- endometrium_thickness_mm
+- endometrium_volume_ml
+- vfi
+- pi
+- clinical_total_peristalsis_rate_min
+- anterior_amplitude
+- posterior_amplitude
+
+### 次要/辅助
+- vi
+- fi
+- ri
+- sd
+- endometrium_type
+
+### 探索性视频指标
+- r2_frequency_cpm
+- m1_prop_rate_min_per_min
+- anterior_er
+- posterior_er
+- mse
+
+## 证据边界
+
+- 自动视频特征与临床手工蠕动频率不是同一个测量对象；
+- R2/M1 不能直接称为真实生理波频率；
+- MSE 不能直接称为已经验证的双壁协调性；
+- 同一患者不同周期的变化同时可能包含生理变化、治疗差异、检查时机、视频质量等因素；
+- 同一患者贡献多个相邻时间段时，这些变化量不是彼此完全独立的；
+- 小样本结果主要用于产生假设，而非证明临床预测价值。
+
+## 隐私
+
+公开仓库中只保留代码、无患者信息的文档、模拟数据和测试。
+真实患者级数据不得上传。
+================ END FILE: 02_longitudinal_analysis/docs/STUDY_DESIGN.md ================
+
+================ BEGIN FILE: 02_longitudinal_analysis/docs/ANALYSIS_PLAN.md | git_blob_sha=a270229154b6c7f9f9a28eb4cc30810d647af3fe ================
+# Pilot analysis plan
+
+本项目按 4 层顺序执行，默认主分析为 strict 队列。
+
+## 1. 建立长格式主表
+
+`01_build_master_table.py`
+
+- 每行 = 一次检查；
+- 同一患者所有合格检查全部保留；
+- clinical Excel 已按现有 `临床数据` 工作表适配；
+- 自动视频特征按 `exam_id/检查ID` 合并；
+- 生成 strict 与 candidate 队列标签；
+- 源姓名/医院身份字段不写入分析主表。
+
+strict：每位患者至少 2 次 >=60 s 检查。
+
+candidate：每位患者至少 2 次有视频检查，且至少 1 次 >=60 s。
+
+## 2. 纵向变化与技术 QC
+
+`02_delta_and_qc.py`
+
+按患者时间顺序计算所有相邻变化：
+
+`delta_k = exam_k - exam_(k-1)`
+
+输出：
+- 相邻区间数；
+- 涉及患者数；
+- delta 中位数与 IQR；
+- 上升/下降/不变区间数；
+- 每位患者的 median adjacent delta 方向；
+- 个体轨迹图；
+- 动态指标 delta 与视频时长/追踪有效率 delta 的描述性 Spearman rho。
+
+重要：同一患者的多个相邻 delta 不独立，因此不把这些区间拼池后做普通显著性检验。
+
+## 3. 形态—血流—蠕动患者内联动
+
+`03_module_comovement.py`
+
+直接在每行一次检查的长表上做 repeated-measures correlation（rmcorr），不把相邻 delta 当独立样本。
+
+预设关键组合写在 `config.py::KEY_PAIRS`。
+
+结果必须同时看：
+- rmcorr；
+- 每位患者轨迹；
+- days_to_transfer；
+- 治疗方案是否变化。
+
+另外描述内膜分型发生变化 vs 未变化的相邻区间中，血流/幅度/临床蠕动的变化。
+
+不预设形态、血流、蠕动必须同向增加。
+
+## 4. 妊娠结局不同患者的自身对照
+
+`04_outcome_self_control.py`
+
+纳入同一患者同时有成功和失败周期者。
+
+主分析：
+- 每患者成功周期特征中位数；
+- 每患者失败周期特征中位数；
+- success median - failure median；
+- 患者方向人数；
+- 差值中位数/IQR；
+- Wilcoxon P 值仅作探索性描述。
+
+敏感性分析：
+- 每位患者只保留时间距离最近的一对不同结局检查；
+- 比较方向是否与全部周期汇总一致。
+
+逐案核查表并排保留：
+- 检查距移植时间；
+- 治疗方式/方案；
+- 周期类型；
+- 胚胎情况/移植数；
+- 视频时长；
+- 追踪有效率/QC/pose 来源（如有）。
+
+## 当前禁区
+
+不做：
+- LASSO/SVM/XGBoost/深度学习；
+- 为提高 AUC 搜索特征；
+- 小样本综合评分；
+- 因结局选择视频片段或修改动态算法；
+- 将 R2/M1 直接解释为真实生理波频率；
+- 将 MSE 直接解释为已验证双壁协调性。
+================ END FILE: 02_longitudinal_analysis/docs/ANALYSIS_PLAN.md ================
+
+================ BEGIN FILE: 02_longitudinal_analysis/docs/DATA_DICTIONARY.md | git_blob_sha=d1e219f1397f43699d46617306879782d1f93541 ================
+# De-identified analysis data dictionary
+
+真实数据在本地整理成去标识化表后再运行代码。不要把真实数据提交到 Git。
+
+## 必需字段
+
+| canonical column | meaning |
+|---|---|
+| patient_id | 随机研究患者 ID，不得使用姓名/门诊号 |
+| exam_id | 随机检查 ID；同一患者每次检查唯一 |
+| exam_order | 患者内检查顺序：1, 2, 3, ... |
+| video_duration_s | 分析视频可用时长（秒） |
+
+## 推荐时间字段
+
+| column | meaning |
+|---|---|
+| exam_date | 检查日期；如存在重识别风险，不进入公开数据 |
+| days_from_first_exam | 相对第一次检查的天数，可用于替代真实日期 |
+| days_to_transfer | 检查距移植的相对天数 |
+
+`exam_order` 是主分析所需字段。患者有多少次检查，就按真实时间顺序编号多少次，不限制为 1/2。
+
+## 结局
+
+| column | meaning |
+|---|---|
+| clinical_pregnancy | 1=临床妊娠，0=未临床妊娠，缺失保持 NaN |
+
+## 内膜
+
+| column | meaning |
+|---|---|
+| endometrium_thickness_mm | 内膜厚度 |
+| endometrium_volume_ml | 内膜容积 |
+| endometrium_type | 内膜分型 |
+
+## 血流
+
+| column | meaning |
+|---|---|
+| vi | VI |
+| fi | FI |
+| vfi | VFI |
+| pi | PI |
+| ri | RI |
+| sd | S/D |
+
+## 临床蠕动
+
+| column | meaning |
+|---|---|
+| clinical_c2f_rate_min | 临床记录的一种方向蠕动频率，单位 次/分 |
+| clinical_f2c_rate_min | 临床记录的另一方向蠕动频率，单位 次/分 |
+| clinical_total_peristalsis_rate_min | 两方向频率之和；仅当两项均有定义时计算 |
+
+临床方向标签与自动算法 C2F/F2C 的解剖对应关系未确认时，不应强制映射。
+
+## 自动动态特征
+
+| column | meaning |
+|---|---|
+| anterior_amplitude | 前壁幅度 |
+| posterior_amplitude | 后壁幅度 |
+| r2_frequency_cpm | R2 局部主导频率候选 |
+| m1_prop_rate_min_per_min | M1 显著传播活动率候选 |
+| anterior_er | 前壁 ER |
+| posterior_er | 后壁 ER |
+| mse | 双壁 MSE 候选 |
+
+## 可选混杂/质量字段
+
+建议本地保留：
+- treatment_protocol
+- embryo_stage
+- embryo_quality
+- embryo_count
+- tracking_valid_fraction
+- video_qc
+- pose_source
+
+## 数据导出原则
+
+用于代码分析的表中不得包含：
+- 姓名；
+- 门诊号；
+- 身份证号；
+- 电话；
+- 住址；
+- 原始视频路径中可识别姓名的部分；
+- 其他直接身份信息。
+================ END FILE: 02_longitudinal_analysis/docs/DATA_DICTIONARY.md ================
+
+================ EXPORT FOOTER ================
+Part-2 bundle complete.
+================ END EXPORT ================
