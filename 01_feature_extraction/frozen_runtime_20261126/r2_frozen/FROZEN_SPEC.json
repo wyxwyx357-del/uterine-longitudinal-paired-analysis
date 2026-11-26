@@ -1,0 +1,23 @@
+{
+  "version": "R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106",
+  "frequency_rule_version": "R2_LONGITUDINAL_TISSUE_FREQUENCY_V1_1_20261106",
+  "patient_count": "dynamic; read from the case manifest and downstream data",
+  "motion_direction": "local wall tangent oriented cervix-to-fundus",
+  "frequency_band_cpm": [0.5, 5.0],
+  "frequency_step_cpm": 0.05,
+  "primary_regions": "high confidence plus independently validated stable medium confidence",
+  "sensitivity_regions": "high confidence only",
+  "same_frequency_handling": "background or brightness same-frequency is a warning and forces medium confidence; it is not exclusion by itself",
+  "patient_eligibility": "at least one eligible posterior-wall region",
+  "wall": "posterior only",
+  "regional_aggregation": "equal mean over available cervical, middle, and fundal posterior regions",
+  "nonlinearity": "restricted cubic spline with training-sample P10/P50/P90 knots",
+  "internal_validation": "1000 patient-level bootstrap optimism correction",
+  "excluded": [
+    "anterior frequency",
+    "radial frequency",
+    "learned regional weights",
+    "outcome-derived frequency threshold",
+    "unrestricted model search"
+  ]
+}
