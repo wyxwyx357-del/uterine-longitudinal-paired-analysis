@@ -40,8 +40,7 @@ a3c5ec2fea94ac4c982f89e16b47fb6246f07223
 c0990fad6dc498ea1c57032f44fe9d3df1ae8ad5
 ```
 
-迁移后已核对一致。
-
+迁移后已核对一致。\n\n按 `SOURCE_LOCK.json` 反向检查正式 runtime 的 Git 锁定源码：\n\n```text\nexpected locked files: 34\nmissing:               0\nmismatch:              0\nbyte-exact:             yes\n```\n
 ## 2. M1
 
 冻结来源提交：
@@ -139,3 +138,15 @@ er_mse/frozen_source/
 - 不新增 pose 算法；
 - 不把失败值改成 0；
 - 只新增仓库组织、运行包装和字段投影脚本。
+
+
+## 7. 静态迁移检查
+
+在不读取患者数据的条件下完成：
+
+- 冻结 runtime Python 源码 `compileall`：PASS；
+- 按新仓库嵌套目录模拟 `PYTHONPATH` 后，`run_final_batch.py --help`：PASS；
+- R2 `track_and_cache_frequency.py --help`：PASS；
+- R2 `extract_longitudinal_frequency.py --help`：PASS。
+
+这只证明迁移后的源码结构/导入可用，不等于已经在真实患者视频上完成端到端数值复现。正式批处理仍应在原 CUDA OpenCV 环境和允许使用的数据上执行。
