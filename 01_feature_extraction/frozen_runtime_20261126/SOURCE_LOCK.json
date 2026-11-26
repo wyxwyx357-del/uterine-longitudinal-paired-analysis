@@ -60,14 +60,14 @@
     "extract_longitudinal_frequency.py": "93367a2cdb6de6995e0cf2146d7391efc3875d5fd0562f5a8c4f8e1752fda17c",
     "prepare_frozen_inputs.py": "94cd507600bbfc0769f74bfe58c9d8d88b8e71d338fbe444250a6aec954bec0e",
     "requirements.txt": "3b1275f05aedcab6195cd990b2c9d25db0f458042412874e918b78400cf096b6",
-    "run_tracking_batch.py": "190b1e235cd81711fa89c925a71ae7e87363312938a7822137cc812f129b35e4",
-    "track_and_cache_frequency.py": "89f9a5186bd1b150eb6b318ed6935c3d13c68c5f94452a038f4ad1ba1251a728",
+    "run_tracking_batch.py": "22e61360299b289b1c2eac9ee478ab8afdc51b84755d23306f4df07281399c12",
+    "track_and_cache_frequency.py": "900136338512e7e04a3510896a4d255fca37cf136b578c8a2b5b3293f37cd965",
     "validate_reproducibility.py": "87502483895c2fda9d5ffea6dca2e177831594fa1c460751bb46270e25ad61a1",
     "verify_tracking_inputs.py": "6f9df04ef43bd30eb49c7ad57b1f2170e8b396aa1b47f623be74fb091c40a722"
   },
   "clinical_outcome_code_included": false,
   "experimental_pose_reset_included": false,
   "nnunet_recovery_included": false,
-  "engineering_revision": "20261126_gemini_audit_fix1",
+  "engineering_revision": "20261126_gemini_audit_fix3",
   "algorithm_definition_unchanged": true
 }
