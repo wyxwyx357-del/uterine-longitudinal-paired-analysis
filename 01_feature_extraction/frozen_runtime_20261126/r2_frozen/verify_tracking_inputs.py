@@ -61,6 +61,11 @@ def main() -> int:
                     fps = capture.get(cv2.CAP_PROP_FPS)
                     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
                     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    if (width, height) != (1260, 910):
+                        problems.append(
+                            f"unsupported_video_geometry:{width}x{height};"
+                            "expected_1260x910"
+                        )
                     ok, frame = capture.read()
                     if not ok or frame is None:
                         problems.append("video_first_frame_read_failed")
