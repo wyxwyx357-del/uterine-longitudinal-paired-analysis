@@ -89,7 +89,8 @@ def main() -> int:
     if not args.input.is_file():
         raise FileNotFoundError(args.input)
 
-    source = pd.read_csv(args.input)
+    source = pd.read_csv(args.input, dtype={"case_id": str})
+    source["case_id"] = source["case_id"].astype(str).str.strip()
     if "case_id" not in source.columns:
         raise ValueError("Frozen table must contain case_id")
     if source["case_id"].isna().any():
