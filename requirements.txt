@@ -2,4 +2,5 @@ numpy>=1.26
 pandas>=2.0
 scipy>=1.11
 matplotlib>=3.8
-pytest>=8.0
+pingouin>=0.5.4
+openpyxl>=3.1
