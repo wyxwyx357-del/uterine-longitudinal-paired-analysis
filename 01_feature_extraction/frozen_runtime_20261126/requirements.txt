@@ -1,0 +1,9 @@
+numpy
+pandas
+scipy
+scikit-learn
+openpyxl
+matplotlib
+pytest
+# IMPORTANT: do not install opencv-python here.
+# Keep/use the existing CUDA-enabled OpenCV build with cudaoptflow.
