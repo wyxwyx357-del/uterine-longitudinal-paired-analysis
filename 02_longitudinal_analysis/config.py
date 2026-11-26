@@ -11,9 +11,14 @@ FIGURES = OUTPUTS / "figures"
 CLINICAL_EXCEL = DATA_RAW / "同一患者至少两次检查有视频_含时长.xlsx"
 CLINICAL_SHEET = "临床数据"
 
-# Optional: one row per exam_id. If this file does not exist, the pipeline
-# still runs with clinical variables only.
-AUTO_FEATURES_CSV = REPO_ROOT / "01_feature_extraction" / "outputs" / "auto_features.csv"
+# Formal feature-extraction output. auto_features.csv is retained only as a
+# backward-compatible projected alias.
+FINAL_DYNAMIC_FEATURES_CSV = (
+    REPO_ROOT / "01_feature_extraction" / "outputs" / "FINAL_DYNAMIC_FEATURES.csv"
+)
+LEGACY_AUTO_FEATURES_CSV = (
+    REPO_ROOT / "01_feature_extraction" / "outputs" / "auto_features.csv"
+)
 
 DURATION_THRESHOLD = 60.0
 
@@ -44,7 +49,12 @@ AUTO_EXPLORATORY = [
     "mse",
     "m1_prop_rate_min_per_min",
 ]
-QC_NUMERIC_COLS = ["video_duration_s", "tracking_valid_fraction"]
+QC_NUMERIC_COLS = [
+    "video_duration_s",
+    "tracking_valid_fraction",
+    "r2_retained_posterior_region_count",
+    "effective_observation_seconds",
+]
 
 PRIMARY_ANALYSIS_COLS = (
     MORPH_COLS
@@ -111,44 +121,53 @@ CLINICAL_COLUMN_ALIASES = {
 
 AUTO_COLUMN_ALIASES = {
     "exam_id": ["exam_id", "检查ID", "record_id", "case_id"],
-    "anterior_amplitude": [
-        "anterior_amplitude",
-        "amp_anterior",
-        "anterior_amp",
-    ],
-    "posterior_amplitude": [
-        "posterior_amplitude",
-        "amp_posterior",
-        "posterior_amp",
-    ],
-    "r2_frequency_cpm": [
-        "r2_frequency_cpm",
-        "R2_frequency_cpm",
-        "R2",
-    ],
-    "m1_prop_rate_min_per_min": [
-        "m1_prop_rate_min_per_min",
-        "M1",
-    ],
+    "anterior_amplitude": ["anterior_amplitude", "amp_anterior", "anterior_amp"],
+    "posterior_amplitude": ["posterior_amplitude", "amp_posterior", "posterior_amp"],
+    "r2_frequency_cpm": ["r2_frequency_cpm", "R2_frequency_cpm", "R2"],
+    "m1_prop_rate_min_per_min": ["m1_prop_rate_min_per_min", "M1"],
     "anterior_er": [
         "anterior_er",
+        "anterior_ER_mean_paired",
         "anterior_ER_mean",
         "ER_anterior",
     ],
     "posterior_er": [
         "posterior_er",
+        "posterior_ER_mean_paired",
         "posterior_ER_mean",
         "ER_posterior",
     ],
-    "mse": [
-        "mse",
-        "MSE",
-        "record_MSE_time_equal",
-    ],
+    "mse": ["mse", "MSE", "record_MSE_time_equal"],
     "tracking_valid_fraction": [
         "tracking_valid_fraction",
+        "raw_valid_fraction",
         "valid_track_ratio",
         "valid_fraction",
+    ],
+    "pipeline_version": ["pipeline_version"],
+    "a0_status": ["a0_status"],
+    "anterior_amplitude_status": ["anterior_amplitude_status"],
+    "posterior_amplitude_status": ["posterior_amplitude_status"],
+    "mse_status": ["mse_status"],
+    "mse_decomposition_status": ["mse_decomposition_status"],
+    "record_mse_z": ["record_MSE_z", "record_mse_z"],
+    "record_mean_bias_sq": ["record_mean_bias_sq"],
+    "record_sd_scale_sq": ["record_sd_scale_sq"],
+    "record_time_shape_term": ["record_time_shape_term"],
+    "m1_status": ["m1_status"],
+    "m1_failure_reason": ["m1_failure_reason"],
+    "m1_algorithm_version": ["m1_algorithm_version"],
+    "m1_prop_rate_max_per_min": ["m1_prop_rate_max_per_min"],
+    "m1_prop_count_min": ["m1_prop_count_min"],
+    "m1_prop_count_max": ["m1_prop_count_max"],
+    "effective_observation_seconds": ["effective_observation_seconds"],
+    "effective_observation_minutes": ["effective_observation_minutes"],
+    "r2_status": ["R2_status", "r2_status"],
+    "r2_failure_reason": ["R2_failure_reason", "r2_failure_reason"],
+    "r2_version": ["R2_version", "r2_version"],
+    "r2_retained_posterior_region_count": [
+        "R2_retained_posterior_region_count",
+        "r2_retained_posterior_region_count",
     ],
     "video_qc": ["video_qc", "qc_flag", "QC"],
     "pose_source": ["pose_source"],
@@ -168,13 +187,30 @@ REVIEW_COLS = [
     "embryo_num",
     "video_duration_s",
     "tracking_valid_fraction",
+    "a0_status",
+    "anterior_amplitude_status",
+    "posterior_amplitude_status",
+    "mse_status",
+    "m1_status",
+    "r2_status",
+    "r2_retained_posterior_region_count",
     "video_qc",
     "pose_source",
 ]
 
+
+def resolve_dynamic_features_csv() -> Path | None:
+    if FINAL_DYNAMIC_FEATURES_CSV.is_file():
+        return FINAL_DYNAMIC_FEATURES_CSV
+    if LEGACY_AUTO_FEATURES_CSV.is_file():
+        return LEGACY_AUTO_FEATURES_CSV
+    return None
+
+
 def ensure_output_dirs() -> None:
     TABLES.mkdir(parents=True, exist_ok=True)
     FIGURES.mkdir(parents=True, exist_ok=True)
+
 
 def cohort_mask(df):
     if ANALYSIS_COHORT == "strict":
