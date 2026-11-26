@@ -1,0 +1,7 @@
+numpy
+pandas
+scipy
+scikit-learn
+openpyxl
+matplotlib
+# cv2 must be provided by the CUDA-enabled OpenCV build used for tracking.
