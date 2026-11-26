@@ -43,7 +43,7 @@
   "r2_version": "R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106",
   "r2_sha256": {
     "FROZEN_SPEC.json": "00c186d4e62d560fa887d934862e53fc64a7bfddd1f5f3cdf85ac6fd2ea3ada5",
-    "build_medium_consensus.py": "cfc20f4a365e0ffd19b8d17783cb8f67adb71cba41f0396897bb8f4b48b9702c",
+    "build_medium_consensus.py": "42a4b38c2ec9b99ab5271eada9e92173028d8eed1e57aeb2d6851cb6d3a3cd88",
     "case_manifest_template.csv": "6d7df5f24d9fe1e446f4c9b33f5b50b9eb7b0d62acae5a24b67d13f0f9fdb146",
     "code/ab_block_tracking.py": "a96a2845bedf8174775ccb27928e188fc6e455235759cde22f664abe83fdad83",
     "code/contrast.py": "6aa67f9a37224d19899094c938030d663d2df93e7d2c90c9a6368d348003abd0",
@@ -57,15 +57,17 @@
     "code/run_regional_frequency.py": "451d4498de0f8d013deb694c0d90a205448ea84e718bcc6726c47f94dbc02477",
     "code/validate_regional_v1_1.py": "54b9f0c1dd69b2695493a5ef399065d14b316663681d3d44feae8cd2bc363333",
     "code/verify_cuda_backend.py": "6d38127dc089fcc799299f2ecf7804d64b6f6701f6b771604eaf5025e6e66764",
-    "extract_longitudinal_frequency.py": "912326dcfcd514ec28a4da1c848bfc44ccbe2fbf9ceaa6049a315581d88a9bc3",
-    "prepare_frozen_inputs.py": "b7df5e03b3ebf6f2f012b374f82ef4062f4ffbe0fc8dec84279aacabe135a3e5",
+    "extract_longitudinal_frequency.py": "9ea4b425f8419e4dec42ca9a18edcc0dfd934b449c430348e61776354b27b60d",
+    "prepare_frozen_inputs.py": "94cd507600bbfc0769f74bfe58c9d8d88b8e71d338fbe444250a6aec954bec0e",
     "requirements.txt": "3b1275f05aedcab6195cd990b2c9d25db0f458042412874e918b78400cf096b6",
-    "run_tracking_batch.py": "dd0b2c62dea95ef7b94aa6583e36c448040dbb48eb52f4a8733539bdd05192c8",
+    "run_tracking_batch.py": "190b1e235cd81711fa89c925a71ae7e87363312938a7822137cc812f129b35e4",
     "track_and_cache_frequency.py": "89f9a5186bd1b150eb6b318ed6935c3d13c68c5f94452a038f4ad1ba1251a728",
-    "validate_reproducibility.py": "be33c8861361c11570fb0a438e427eb71e197936bd8dd0e0c7e0eabb9efee78a",
+    "validate_reproducibility.py": "87502483895c2fda9d5ffea6dca2e177831594fa1c460751bb46270e25ad61a1",
     "verify_tracking_inputs.py": "19223fdd3e2d6a11cda5e9b9cedf42efd796df8a1c1e2baf72aabbd691a3e97e"
   },
   "clinical_outcome_code_included": false,
   "experimental_pose_reset_included": false,
-  "nnunet_recovery_included": false
+  "nnunet_recovery_included": false,
+  "engineering_revision": "20261126_gemini_audit_fix1",
+  "algorithm_definition_unchanged": true
 }
