@@ -14,9 +14,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+RUNTIME_ROOT = Path(__file__).resolve().parent
+if str(RUNTIME_ROOT) not in sys.path:
+    sys.path.insert(0, str(RUNTIME_ROOT))
 
 from analysis.mse_pregnancy_association.code.measurement.io import read_video, jsonable
 from analysis.mse_pregnancy_association.code.measurement.geometry import read_labelme, layout
@@ -31,6 +31,15 @@ PIPELINE_VERSION = "UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1"
 M1_VERSION = "m1-global-pairing-unseen-v1"
 M1_NOISE_FLOOR = 0.0007509593468916695
 MSE_S_RANGE = (0.2, 0.8)
+R2_VERSION = "R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106"
+MANIFEST_PATH_FIELDS = (
+    "video",
+    "annotation",
+    "pose",
+    "a0_spacetime_cache",
+    "r2_tracking",
+    "r2_nodes",
+)
 
 
 def sha256(path: Path) -> str:
@@ -225,10 +234,30 @@ def run_a0_m1_mse(rows: list[dict], output: Path, resume: bool):
             base["a0_failure_reason"] = ""
         except Exception as e:
             base.update(
-                a0_status="failed", a0_failure_reason=f"{type(e).__name__}: {e}",
-                record_MSE_time_equal=None, mse_status="unavailable_a0_failure",
-                m1_status="unavailable_a0_failure", m1_failure_reason="a0_failure",
-                m1_algorithm_version=M1_VERSION, m1_prop_rate_min_per_min=None,
+                a0_status="failed",
+                a0_failure_reason=f"{type(e).__name__}: {e}",
+                raw_valid_fraction=None,
+                anterior_amplitude=None,
+                posterior_amplitude=None,
+                anterior_amplitude_status="unavailable_a0_failure",
+                posterior_amplitude_status="unavailable_a0_failure",
+                anterior_ER_mean_paired=None,
+                posterior_ER_mean_paired=None,
+                record_MSE_time_equal=None,
+                record_MSE_z=None,
+                record_mean_bias_sq=None,
+                record_sd_scale_sq=None,
+                record_time_shape_term=None,
+                mse_status="unavailable_a0_failure",
+                mse_decomposition_status="unavailable_a0_failure",
+                m1_status="unavailable_a0_failure",
+                m1_failure_reason="a0_failure",
+                m1_algorithm_version=M1_VERSION,
+                m1_prop_count_min=None,
+                m1_prop_count_max=None,
+                effective_observation_seconds=None,
+                effective_observation_minutes=None,
+                m1_prop_rate_min_per_min=None,
                 m1_prop_rate_max_per_min=None,
             )
             (folder / "ERROR.txt").write_text(traceback.format_exc(), encoding="utf-8")
@@ -248,84 +277,317 @@ def write_csv(path: Path, rows: list[dict]):
         w.writeheader(); w.writerows(rows)
 
 
-def run_command(cmd: list[str], cwd: Path, log: Path):
+def run_command(
+    cmd: list[str],
+    cwd: Path,
+    log: Path,
+    *,
+    allow_failure: bool = False,
+) -> int:
     print("RUN:", " ".join(cmd), flush=True)
     with log.open("w", encoding="utf-8") as out:
-        p = subprocess.run(cmd, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, check=False)
-    if p.returncode:
+        p = subprocess.run(
+            cmd,
+            cwd=cwd,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    if p.returncode and not allow_failure:
         raise RuntimeError(f"Command failed ({p.returncode}); see {log}")
+    return int(p.returncode)
 
 
 def run_r2(rows: list[dict], output: Path, workers: int, resume: bool):
     r2_root = Path(__file__).resolve().parent / "r2_frozen"
     work = output / "r2"
     work.mkdir(parents=True, exist_ok=True)
-    eligible, missing = [], {}
+
+    eligible: list[dict[str, str]] = []
+    unavailable: dict[str, dict[str, str]] = {}
+
     for row in rows:
         case = text(row.get("case_id"))
-        video = optional_path(row.get("video")); tr = optional_path(row.get("r2_tracking")); nodes = optional_path(row.get("r2_nodes"))
-        if video and video.is_file() and tr and tr.is_file() and nodes and nodes.is_file():
-            eligible.append({
-                "case_id": case, "video": str(video), "tracking": str(tr), "nodes": str(nodes),
-                "mm_per_processed_pixel": text(row.get("mm_per_processed_pixel")),
-            })
+        video = optional_path(row.get("video"))
+        tr = optional_path(row.get("r2_tracking"))
+        nodes = optional_path(row.get("r2_nodes"))
+        if (
+            video
+            and video.is_file()
+            and tr
+            and tr.is_file()
+            and nodes
+            and nodes.is_file()
+        ):
+            eligible.append(
+                {
+                    "case_id": case,
+                    "video": str(video),
+                    "tracking": str(tr),
+                    "nodes": str(nodes),
+                    "mm_per_processed_pixel": text(
+                        row.get("mm_per_processed_pixel")
+                    ),
+                }
+            )
         else:
-            missing[case] = "missing_r2_video_tracking_or_nodes"
-    manifest = work / "r2_manifest.csv"
-    write_csv(manifest, eligible)
+            unavailable[case] = {
+                "status": "missing_input",
+                "reason": "missing_r2_video_tracking_or_nodes",
+            }
+
     if not eligible:
-        return {}, missing
+        return {}, unavailable
+
+    all_manifest = work / "r2_manifest_all_candidates.csv"
+    manifest = work / "r2_manifest.csv"
+    write_csv(all_manifest, eligible)
+    write_csv(manifest, eligible)
+
     validate_report = work / "input_validation.csv"
     tracking_run = work / "tracking_run"
     longitudinal = work / "longitudinal_run"
     reproducibility = work / "reproducibility_run"
     consensus = work / "medium_consensus_run"
     frozen_inputs = work / "frozen_model_inputs"
+
     if not (resume and validate_report.is_file()):
-        run_command([sys.executable, str(r2_root / "verify_tracking_inputs.py"), "--manifest", str(manifest), "--report", str(validate_report)], r2_root, work / "01_verify.log")
-    run_command([sys.executable, str(r2_root / "run_tracking_batch.py"), "--manifest", str(manifest), "--run-dir", str(tracking_run), "--workers", str(workers)], r2_root, work / "02_tracking.log")
-    if not (resume and (longitudinal / "longitudinal_region_frequency.csv").is_file()):
-        run_command([sys.executable, str(r2_root / "extract_longitudinal_frequency.py"), "--source-run", str(tracking_run), "--output", str(longitudinal)], r2_root, work / "03_longitudinal.log")
-    if not (resume and (reproducibility / "region_reproducibility_details.csv").is_file()):
-        run_command([sys.executable, str(r2_root / "validate_reproducibility.py"), "--source-run", str(tracking_run), "--longitudinal-run", str(longitudinal), "--output", str(reproducibility)], r2_root, work / "04_reproducibility.log")
-    if not (resume and (consensus / "medium_consensus_details.csv").is_file()):
-        run_command([sys.executable, str(r2_root / "build_medium_consensus.py"), "--source-run", str(tracking_run), "--longitudinal-run", str(longitudinal), "--reproducibility-run", str(reproducibility), "--output", str(consensus)], r2_root, work / "05_consensus.log")
+        run_command(
+            [
+                sys.executable,
+                str(r2_root / "verify_tracking_inputs.py"),
+                "--manifest",
+                str(all_manifest),
+                "--report",
+                str(validate_report),
+            ],
+            r2_root,
+            work / "01_verify.log",
+            allow_failure=True,
+        )
+
+    if not validate_report.is_file():
+        raise RuntimeError("R2 input validation did not produce a report")
+
+    with validate_report.open(
+        "r", encoding="utf-8-sig", newline=""
+    ) as stream:
+        validation_rows = list(csv.DictReader(stream))
+    validation = {
+        text(row.get("case_id")): text(row.get("status"))
+        for row in validation_rows
+    }
+    ready_ids = {
+        case_id for case_id, status in validation.items()
+        if status == "ready"
+    }
+    for row in eligible:
+        case_id = row["case_id"]
+        if case_id not in ready_ids:
+            unavailable[case_id] = {
+                "status": "input_validation_failed",
+                "reason": validation.get(
+                    case_id, "missing_from_input_validation_report"
+                ),
+            }
+
+    eligible = [row for row in eligible if row["case_id"] in ready_ids]
+    write_csv(manifest, eligible)
+    if not eligible:
+        return {}, unavailable
+
+    run_command(
+        [
+            sys.executable,
+            str(r2_root / "run_tracking_batch.py"),
+            "--manifest",
+            str(manifest),
+            "--run-dir",
+            str(tracking_run),
+            "--workers",
+            str(workers),
+        ],
+        r2_root,
+        work / "02_tracking.log",
+    )
+
+    tracking_status_path = tracking_run / "resumable_status.json"
+    if not tracking_status_path.is_file():
+        raise RuntimeError("R2 tracking did not produce resumable_status.json")
+    tracking_status = json.loads(
+        tracking_status_path.read_text(encoding="utf-8")
+    )
+    case_status = tracking_status.get("cases", {})
+    successful_ids = {
+        case_id
+        for case_id, record in case_status.items()
+        if record.get("state") == "complete"
+    }
+    for row in eligible:
+        case_id = row["case_id"]
+        if case_id not in successful_ids:
+            record = case_status.get(case_id, {})
+            unavailable[case_id] = {
+                "status": "failed",
+                "reason": (
+                    "r2_tracking_failed"
+                    f";return_code={record.get('return_code')}"
+                ),
+            }
+
+    if not successful_ids:
+        return {}, unavailable
+
+    if not (
+        resume
+        and (longitudinal / "longitudinal_region_frequency.csv").is_file()
+    ):
+        run_command(
+            [
+                sys.executable,
+                str(r2_root / "extract_longitudinal_frequency.py"),
+                "--source-run",
+                str(tracking_run),
+                "--output",
+                str(longitudinal),
+            ],
+            r2_root,
+            work / "03_longitudinal.log",
+        )
+
+    if not (
+        resume
+        and (
+            reproducibility / "region_reproducibility_details.csv"
+        ).is_file()
+    ):
+        run_command(
+            [
+                sys.executable,
+                str(r2_root / "validate_reproducibility.py"),
+                "--source-run",
+                str(tracking_run),
+                "--longitudinal-run",
+                str(longitudinal),
+                "--output",
+                str(reproducibility),
+            ],
+            r2_root,
+            work / "04_reproducibility.log",
+        )
+
+    if not (
+        resume and (consensus / "medium_consensus_details.csv").is_file()
+    ):
+        run_command(
+            [
+                sys.executable,
+                str(r2_root / "build_medium_consensus.py"),
+                "--source-run",
+                str(tracking_run),
+                "--longitudinal-run",
+                str(longitudinal),
+                "--reproducibility-run",
+                str(reproducibility),
+                "--output",
+                str(consensus),
+            ],
+            r2_root,
+            work / "05_consensus.log",
+        )
+
     if not (resume and (frozen_inputs / "main.csv").is_file()):
         if frozen_inputs.exists():
             shutil.rmtree(frozen_inputs)
-        run_command([sys.executable, str(r2_root / "prepare_frozen_inputs.py"), "--longitudinal-regions", str(longitudinal / "longitudinal_region_frequency.csv"), "--medium-consensus", str(consensus / "medium_consensus_details.csv"), "--output", str(frozen_inputs)], r2_root, work / "06_prepare.log")
-    data = pd.read_csv(frozen_inputs / "main.csv")
-    retain = data["retained_for_patient_model"].astype(str).str.lower().isin(["true", "1"])
-    posterior = data.loc[retain & data["wall"].eq("posterior")].copy()
-    posterior["frequency"] = pd.to_numeric(posterior["optimized_candidate_frequency_cpm"], errors="coerce")
+        run_command(
+            [
+                sys.executable,
+                str(r2_root / "prepare_frozen_inputs.py"),
+                "--longitudinal-regions",
+                str(longitudinal / "longitudinal_region_frequency.csv"),
+                "--medium-consensus",
+                str(consensus / "medium_consensus_details.csv"),
+                "--output",
+                str(frozen_inputs),
+            ],
+            r2_root,
+            work / "06_prepare.log",
+        )
+
+    data = pd.read_csv(
+        frozen_inputs / "main.csv",
+        dtype={"case_id": str},
+    )
+    data["case_id"] = data["case_id"].astype(str).str.strip()
+    retain = (
+        data["retained_for_patient_model"]
+        .astype(str)
+        .str.lower()
+        .isin(["true", "1"])
+    )
+    posterior = data.loc[
+        retain & data["wall"].eq("posterior")
+    ].copy()
+    posterior["frequency"] = pd.to_numeric(
+        posterior["optimized_candidate_frequency_cpm"],
+        errors="coerce",
+    )
     posterior = posterior[np.isfinite(posterior["frequency"])]
-    out = {}
-    for case, group in posterior.groupby("case_id"):
-        out[str(case)] = {
+
+    out: dict[str, dict[str, object]] = {}
+    for case, group in posterior.groupby("case_id", sort=False):
+        case_id = str(case)
+        out[case_id] = {
             "R2_frequency_cpm": float(group["frequency"].mean()),
             "R2_retained_posterior_region_count": int(len(group)),
             "R2_status": "completed",
             "R2_failure_reason": "",
-            "R2_version": "R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106",
+            "R2_version": R2_VERSION,
         }
-    for row in eligible:
-        if row["case_id"] not in out:
-            out[row["case_id"]] = {
-                "R2_frequency_cpm": None, "R2_retained_posterior_region_count": 0,
-                "R2_status": "no_retained_posterior_region", "R2_failure_reason": "no_eligible_posterior_region_after_frozen_rules",
-                "R2_version": "R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106",
+
+    for case_id in successful_ids:
+        if case_id not in out:
+            out[case_id] = {
+                "R2_frequency_cpm": None,
+                "R2_retained_posterior_region_count": 0,
+                "R2_status": "no_retained_posterior_region",
+                "R2_failure_reason": (
+                    "no_eligible_posterior_region_after_frozen_rules"
+                ),
+                "R2_version": R2_VERSION,
             }
-    return out, missing
+
+    return out, unavailable
 
 
 def load_manifest(path: Path):
-    with path.open("r", encoding="utf-8-sig", newline="") as f:
+    manifest_path = path.resolve()
+    manifest_dir = manifest_path.parent
+    with manifest_path.open(
+        "r", encoding="utf-8-sig", newline=""
+    ) as f:
         rows = list(csv.DictReader(f))
     if not rows:
         raise ValueError("Manifest is empty")
-    ids = [text(r.get("case_id")) for r in rows]
-    if any(not x for x in ids) or len(ids) != len(set(ids)):
-        raise ValueError("case_id must be nonempty and unique")
+
+    ids = []
+    for row in rows:
+        case_id = text(row.get("case_id"))
+        row["case_id"] = case_id
+        ids.append(case_id)
+        for key in MANIFEST_PATH_FIELDS:
+            raw = text(row.get(key))
+            if not raw:
+                continue
+            value = Path(raw)
+            if not value.is_absolute():
+                value = manifest_dir / value
+            row[key] = str(value.resolve())
+
+    if any(not case_id for case_id in ids):
+        raise ValueError("case_id must be nonempty")
+    if len(ids) != len(set(ids)):
+        raise ValueError("case_id must be unique")
     return rows
 
 
@@ -351,20 +613,58 @@ def main():
             a0_rows.append(json.loads(saved.read_text(encoding="utf-8")))
     else:
         a0_rows = run_a0_m1_mse(rows, args.output, args.resume)
-    r2_map, r2_missing = ({}, {}) if args.skip_r2 else run_r2(rows, args.output, args.r2_workers, args.resume)
+    if args.skip_r2:
+        r2_map, r2_unavailable = {}, {}
+    else:
+        try:
+            r2_map, r2_unavailable = run_r2(
+                rows,
+                args.output,
+                args.r2_workers,
+                args.resume,
+            )
+        except Exception as exc:
+            r2_map = {}
+            r2_unavailable = {
+                text(row["case_id"]): {
+                    "status": "failed",
+                    "reason": f"r2_stage_failed:{type(exc).__name__}:{exc}",
+                }
+                for row in rows
+            }
+            r2_error = args.output / "r2" / "R2_STAGE_ERROR.txt"
+            r2_error.parent.mkdir(parents=True, exist_ok=True)
+            r2_error.write_text(traceback.format_exc(), encoding="utf-8")
     by_id = {r["case_id"]: dict(r) for r in a0_rows}
     final = []
     for src in rows:
         case = text(src["case_id"])
         row = by_id.get(case, {"case_id": case, "pipeline_version": PIPELINE_VERSION})
         if args.skip_r2:
-            row.update(R2_frequency_cpm=None, R2_status="skipped", R2_failure_reason="skip_r2_requested")
+            row.update(
+                R2_frequency_cpm=None,
+                R2_retained_posterior_region_count=None,
+                R2_status="skipped",
+                R2_failure_reason="skip_r2_requested",
+                R2_version=R2_VERSION,
+            )
         elif case in r2_map:
             row.update(r2_map[case])
         else:
-            row.update(R2_frequency_cpm=None, R2_retained_posterior_region_count=None,
-                       R2_status="missing_input", R2_failure_reason=r2_missing.get(case, "missing_r2_input"),
-                       R2_version="R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106")
+            unavailable = r2_unavailable.get(
+                case,
+                {
+                    "status": "failed",
+                    "reason": "missing_r2_result",
+                },
+            )
+            row.update(
+                R2_frequency_cpm=None,
+                R2_retained_posterior_region_count=None,
+                R2_status=unavailable["status"],
+                R2_failure_reason=unavailable["reason"],
+                R2_version=R2_VERSION,
+            )
         final.append(row)
     table = args.output / "FINAL_DYNAMIC_FEATURES.csv"
     write_csv(table, final)
