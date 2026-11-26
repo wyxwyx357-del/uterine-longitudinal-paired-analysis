@@ -2425,3 +2425,1530 @@ if __name__ == "__main__":
 case_id,video,annotation,pose,time_factor,a0_spacetime_cache,r2_tracking,r2_nodes,mm_per_processed_pixel
 CASE001,D:/study/videos/CASE001.mp4,D:/study/annotations/CASE001.json,D:/study/poses/CASE001.npz,1.0,,D:/study/p3_tracks/CASE001.npz,D:/study/nodes/CASE001.json,
 ================ END FILE: 01_feature_extraction/frozen_runtime_20261126/manifest_template.csv ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/__init__.py | git_blob_sha=87ed5210ce8514378db4796e666a1c64a4ec13b8 ================
+"""Frozen research-analysis archive; no patient data bundled."""
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/__init__.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/__init__.py | git_blob_sha=87ed5210ce8514378db4796e666a1c64a4ec13b8 ================
+"""Frozen research-analysis archive; no patient data bundled."""
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/__init__.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/__init__.py | git_blob_sha=87ed5210ce8514378db4796e666a1c64a4ec13b8 ================
+"""Frozen research-analysis archive; no patient data bundled."""
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/__init__.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/activity_counting.py | git_blob_sha=367c041f741d65703ddeaef24c3926a12f97d982 ================
+"""Step-1 v2 count implementation.
+
+This preserves the old strict-pair/single activity ledger for auditability,
+then adds a transparent propagation-count range over unresolved/one-to-many
+cross-wall relationships. No threshold, filter, propagation classifier, or
+physiological definition is changed.
+"""
+from itertools import combinations
+import numpy as np
+from analysis.mse_pregnancy_association.code.direction_identity_trial import compare_identity_without_direction
+from analysis.mse_pregnancy_association.code.measurement.radial_events import _describe_arrival, _arrival_evidence, RadialWaveConfig
+
+
+def retained_phase_fits(node,block,s,dt):
+    """Fit signed phase peaks only where each section has one unambiguous peak."""
+    fits=[];availability=[]
+    for sign in (1,-1):
+        peaks=[[p['peak_s'] for p in node['profile'][int(c)] if p['sign']==sign]
+               for c in block]
+        complete=all(len(values)==1 for values in peaks)
+        availability.append(dict(sign=sign,complete=complete,
+                                 peak_counts=[len(values) for values in peaks]))
+        if complete:
+            fits.append(dict(_arrival_evidence(np.asarray(s)[block],
+                             np.array([values[0] for values in peaks]),dt),sign=sign))
+    return fits,availability
+
+
+def _node_evidence(node, s, dt):
+    evidence=[]
+    ids=np.asarray(sorted(node['sections']),int)
+    for block in np.split(ids,np.flatnonzero(np.diff(ids)!=1)+1):
+        if len(block)<3:
+            continue
+        arrival=np.array([node['arrival'][int(c)] for c in block])
+        phase_fits,availability=retained_phase_fits(node,block,s,dt)
+        measurement=_describe_arrival(block,arrival,np.asarray(s),dt,phase_fits,RadialWaveConfig())
+        evidence.append(dict(node_id=node['node_id'],sections=block.tolist(),measurement=measurement,
+            phase_fit_availability=availability,
+            propagation_supported=measurement['classification'] in ('C2F','F2C')))
+    return evidence
+
+
+def _maximum_bipartite_matching_count(left_nodes, adjacency):
+    """Deterministic maximum cardinality matching; returns number of pairs."""
+    owner={}
+    def augment(left, seen):
+        for right in sorted(adjacency.get(left, ())):
+            if right in seen:
+                continue
+            seen.add(right)
+            if right not in owner or augment(owner[right], seen):
+                owner[right]=left
+                return True
+        return False
+    return sum(augment(left,set()) for left in sorted(left_nodes))
+
+
+def count_activities(nodes,s,span,dt,observation_seconds):
+    edges=[compare_identity_without_direction(a,b,span,dt)
+           for a,b in combinations(nodes,2) if a['wall']!=b['wall']]
+    choices={n['node_id']:[] for n in nodes};uncertain={n['node_id']:[] for n in nodes}
+    for edge in edges:
+        target=choices if edge['relation']=='shared_identity_supported' else uncertain if edge['relation']=='unresolved' else None
+        if target is not None:
+            a,b=edge['node_a'],edge['node_b'];target[a].append(b);target[b].append(a)
+
+    # Preserve v1 strict one-to-one/no-uncertainty grouping exactly.
+    pairs={tuple(sorted((a,bs[0]))) for a,bs in choices.items() if len(bs)==1 and choices[bs[0]]==[a]
+           and not uncertain[a] and not uncertain[bs[0]]}
+    lookup={n['node_id']:n for n in nodes};used=set();groups=[]
+    for a,b in sorted(pairs):
+        groups.append([lookup[a],lookup[b]]);used.update((a,b))
+    groups.extend([[n] for n in nodes if n['node_id'] not in used])
+
+    # Compute propagation support once per original wall node.  This lets the
+    # uncertainty graph exclude non-propagation nodes, preventing them from
+    # consuming a matching slot that matters to the propagation count bound.
+    node_evidence={node['node_id']:_node_evidence(node,s,dt) for node in nodes}
+    node_propagates={node_id:any(row['propagation_supported'] for row in evidence)
+                     for node_id,evidence in node_evidence.items()}
+
+    activities=[]
+    for i,group in enumerate(groups,1):
+        evidence=[row for node in group for row in node_evidence[node['node_id']]]
+        members=[n['node_id'] for n in group]
+        phases=[p for n in group for ps in n['profile'].values() for p in ps]
+        activities.append(dict(activity_id=f'activity_{i:03d}',source_nodes=members,
+            walls=sorted({n['wall'] for n in group}),
+            propagation_supported=any(node_propagates[node_id] for node_id in members),
+            block_evidence=evidence,direction_used_for_counting=False,
+            direction_conflict_QC=len({n['direction'] for n in group if n['direction']})>1,
+            unresolved_related_nodes=sorted({k for a in members for k in choices[a]+uncertain[a] if k not in members}),
+            evidence_start_s=min(p['start_s'] for p in phases),evidence_end_s=max(p['end_s'] for p in phases)))
+
+    # ----- Legacy v1 count: strict pairs + every unmerged propagation node -----
+    legacy_count=sum(a['propagation_supported'] for a in activities)
+
+    # Strict merged pair contributes one propagation activity if either member
+    # has supported propagation under the unchanged classifier.
+    confirmed_pair_members={member for pair in pairs for member in pair}
+    confirmed_propagation_pairs=sum(
+        any(node_propagates[node_id] for node_id in pair) for pair in pairs
+    )
+
+    # Only unmerged propagation-supported nodes enter the ambiguity graph.
+    unmerged_prop={node_id for node_id,prop in node_propagates.items()
+                   if prop and node_id not in confirmed_pair_members}
+
+    relevant_relations={'shared_identity_supported','unresolved'}
+    adjacency={node_id:[] for node_id in unmerged_prop if lookup[node_id]['wall']==0}
+    ambiguous_nodes=set()
+    for edge in edges:
+        if edge['relation'] not in relevant_relations:
+            continue
+        a,b=edge['node_a'],edge['node_b']
+        if a not in unmerged_prop or b not in unmerged_prop:
+            continue
+        if lookup[a]['wall']==1:
+            a,b=b,a
+        adjacency.setdefault(a,[]).append(b)
+        ambiguous_nodes.update((a,b))
+
+    max_matching=_maximum_bipartite_matching_count(adjacency.keys(),adjacency)
+    unmerged_prop_count=len(unmerged_prop)
+    min_count=int(confirmed_propagation_pairs + unmerged_prop_count - max_matching)
+    max_count=int(confirmed_propagation_pairs + unmerged_prop_count)
+    clean_unmerged=sum(node_id not in ambiguous_nodes for node_id in unmerged_prop)
+    resolved_count=int(confirmed_propagation_pairs + clean_unmerged)
+
+    if max_count != legacy_count:
+        raise RuntimeError('v2 upper count must equal the frozen v1 strict-pair/single count')
+
+    if observation_seconds>0:
+        frequency_range=[min_count*60/observation_seconds,max_count*60/observation_seconds]
+        legacy_frequency=legacy_count*60/observation_seconds
+        exact_frequency=(frequency_range[0] if min_count==max_count else None)
+    else:
+        frequency_range=[None,None];legacy_frequency=None;exact_frequency=None
+
+    return dict(
+        activities=activities,
+        identity_comparisons=edges,
+        # Historical fields retained unchanged for backward audit compatibility.
+        significant_propagation_activity_count=legacy_count,
+        significant_propagation_activity_frequency_cpm=legacy_frequency,
+        significant_propagation_activity_count_v1_legacy=legacy_count,
+        legacy_significant_propagation_activity_count=legacy_count,
+        significant_propagation_activity_frequency_cpm_v1_legacy=legacy_frequency,
+        # New v2 transparent identity-uncertainty outputs.
+        significant_propagation_activity_count_range=[min_count,max_count],
+        significant_propagation_activity_count_min=min_count,
+        significant_propagation_activity_count_max=max_count,
+        significant_propagation_activity_count_v2_exact=(min_count if min_count==max_count else None),
+        significant_propagation_activity_count_exact=(min_count if min_count==max_count else None),
+        significant_propagation_activity_frequency_cpm_range=frequency_range,
+        significant_propagation_activity_frequency_cpm_min=frequency_range[0],
+        significant_propagation_activity_frequency_cpm_max=frequency_range[1],
+        significant_propagation_activity_frequency_cpm_v2_exact=exact_frequency,
+        significant_propagation_activity_frequency_cpm_exact=exact_frequency,
+        count_range_semantics="identity ambiguity range, not statistical confidence interval",
+        resolved_propagation_activity_count=resolved_count,
+        ambiguous_cross_wall_propagation_pairs=int(max_matching),
+        ambiguous_cross_wall_propagation_node_count=int(len(ambiguous_nodes)),
+        ambiguous_propagation_node_count=int(len(ambiguous_nodes)),
+        ambiguous_propagation_fraction=(len(ambiguous_nodes)/sum(node_propagates.values()) if any(node_propagates.values()) else None),
+        ambiguous_cross_wall_propagation_fraction=(len(ambiguous_nodes)/sum(node_propagates.values()) if any(node_propagates.values()) else None),
+        other_significant_activity_count=len(activities)-legacy_count,
+        effective_observation_seconds=observation_seconds,
+        direction_used_for_counting=False,cutoff=.6,
+        count_algorithm_version='activity_count_v2_logic_fix_only',
+        reviewed=False,frozen_count_algorithm=False,
+        interpretation=('algorithm-defined significant propagation activity; '
+                        'identity uncertainty is represented by a count range; weak activity may be missed'))
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/activity_counting.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/activity_strength.py | git_blob_sha=db0331848cc88d72f0f3aac169f6ec770f7d61fd ================
+"""Whole-activity strength after ownership; no new detection or wave counts.
+
+Median per-native-section phase-footprint RMS is compared with the maximum
+matched-footprint RMS in calibration rigid residuals. Ratio > 1 is an
+engineering prominence decision, not a physiological truth test.
+"""
+import numpy as np
+from analysis.mse_pregnancy_association.code.measurement.amplitude import band_limited_signal
+
+
+def filtered_runs(signal, valid, time_s):
+    y = np.asarray(signal, float); m = np.asarray(valid, bool)
+    t = np.asarray(time_s, float)
+    if y.shape != m.shape or y.shape[0] != len(t) or len(t) < 3 or np.any(np.diff(t) <= 0):
+        raise ValueError('Expected native time-first signals and matching validity')
+    result = np.full_like(y, np.nan)
+    minimum = max(3, int(np.ceil(12/np.median(np.diff(t)))))
+    for col in np.ndindex(y.shape[1:]):
+        key = (slice(None),)+col
+        supported = m[key] & np.isfinite(y[key])
+        for a, b in np.flatnonzero(np.diff(np.r_[False, supported, False])).reshape(-1, 2):
+            if b-a >= minimum:
+                result[(slice(a,b),)+col] = band_limited_signal(y[(slice(a,b),)+col], t[a:b])
+    return result
+
+
+class RigidReference:
+    """Translate a candidate footprint over complete native noise supports.
+
+    Exact section offsets are retained, including gaps. Temporal offsets and
+    inclusive durations are rounded to the reference's native frames, never
+    interpolated. Windows crossing a missing reference sample are excluded.
+    """
+    def __init__(self, banks):
+        self.banks = []
+        for name, y, t in banks:
+            y = np.asarray(y, float); t = np.asarray(t, float)
+            if y.ndim != 3 or len(y) != len(t) or len(t) < 3:
+                raise ValueError('Expected rigid time x wall x section arrays')
+            dt = float(np.median(np.diff(t)))
+            if not np.allclose(np.diff(t), dt, rtol=1e-5, atol=1e-9):
+                raise ValueError('Reference time must be uniform')
+            good = np.isfinite(y)
+            energy = np.concatenate([np.zeros((1,)+y.shape[1:]),
+                                     np.cumsum(np.where(good, y*y, 0), axis=0)])
+            missing = np.concatenate([np.zeros((1,)+y.shape[1:], int),
+                                      np.cumsum(~good, axis=0)])
+            self.banks.append((name, energy, missing, dt))
+
+    def maximum(self, sections, starts_s, ends_s):
+        sections = np.asarray(sections, int)
+        offsets = sections-sections[0]
+        origin = float(np.min(starts_s))
+        maximum = None; count = 0; by_bank = {}
+        for name, energy, missing, dt in self.banks:
+            lo = np.rint((np.asarray(starts_s)-origin)/dt).astype(int)
+            hi = np.rint((np.asarray(ends_s)-origin)/dt).astype(int)+1
+            duration = hi-lo
+            time_count = len(energy)-int(hi.max())
+            spatial_count = energy.shape[2]-int(offsets.max())
+            if min(time_count, spatial_count) < 1:
+                continue
+            start = np.arange(time_count)[:, None, None]
+            column = np.arange(spatial_count)[None, :, None]+offsets[None, None, :]
+            values = []
+            for wall in range(energy.shape[1]):
+                sums = energy[start+hi, wall, column]-energy[start+lo, wall, column]
+                complete = (missing[start+hi, wall, column]-missing[start+lo, wall, column] == 0).all(2)
+                rms = np.sqrt(np.maximum(sums, 0)/duration)
+                statistic = np.median(rms, axis=2)[complete]
+                if len(statistic):
+                    values.append(statistic)
+            if values:
+                pooled = np.concatenate(values)
+                value = float(pooled.max()); count += len(pooled)
+                by_bank[name] = dict(maximum=value, matched_windows=len(pooled))
+                maximum = value if maximum is None else max(maximum, value)
+        return dict(maximum_rms=maximum, matched_windows=count, calibration_banks=by_bank)
+
+
+def score_activity(event, source_evidence, filtered, valid, time_s, reference):
+    """Use canonical source identity so a small split cannot replace full support."""
+    entity = source_evidence[event['canonical_source_entity_id']]
+    ids = np.array(sorted(int(c) for c in entity['profile']), int)
+    if not len(ids) or np.any(np.diff(ids) <= 0):
+        raise ValueError('Expected ordered nonempty canonical activity sections')
+    t = np.asarray(time_s, float); y = np.asarray(filtered, float); m = np.asarray(valid, bool)
+    if y.shape != m.shape or y.shape[0] != len(t) or y.ndim != 2:
+        raise ValueError('Expected one wall and matching time/section validity')
+    rms = []; starts = []; ends = []
+    for col in ids:
+        phases = entity['profile'].get(str(col), entity['profile'].get(int(col)))
+        start = min(p['start_s'] for p in phases); end = max(p['end_s'] for p in phases)
+        a = int(np.searchsorted(t, start-1e-8)); b = int(np.searchsorted(t, end+1e-8, side='right'))
+        if b <= a or not m[a:b, col].all() or not np.isfinite(y[a:b, col]).all():
+            return dict(event_proposal_id=event['event_proposal_id'], decision='unscored_missing_support',
+                        activity_rms=None, strength_ratio=None, event_count=None, event_frequency=None)
+        rms.append(float(np.sqrt(np.mean(y[a:b, col]**2))))
+        starts.append(float(t[a])); ends.append(float(t[b-1]))
+    activity = float(np.median(rms))
+    null = reference.maximum(ids, starts, ends)
+    floor = null['maximum_rms']
+    ratio = activity/floor if floor is not None and floor > 0 else None
+    decision = ('unscored_no_matched_reference' if floor is None else
+                'above_rigid_reference' if activity > floor else 'not_above_rigid_reference')
+    return dict(event_proposal_id=event['event_proposal_id'], canonical_source=entity['entity_id'],
+        decision=decision, activity_rms=activity, per_section_rms=rms, sections=ids.tolist(),
+        phase_start_s=starts, phase_end_s=ends, strength_ratio=ratio,
+        matched_rigid_reference=null, direction=event['direction'],
+        ownership_status=event['ownership_status'],
+        prominent_propagation_proposal=decision=='above_rigid_reference' and event['direction'] in ('C2F','F2C'),
+        event_count=None, event_frequency=None)
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/activity_strength.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/batch_wave_counts.py | git_blob_sha=cca924173f5bd064bdb8d82e915f5b8de00a6cc7 ================
+"""Apply the existing significant-activity counter to saved A0 maps.
+
+No outcome access, tracking rerun, new detector, or threshold selection. These
+remain algorithm-defined significant propagation counts, not adjudicated waves.
+"""
+import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import hashlib
+import json
+from pathlib import Path
+import time
+import traceback
+
+import numpy as np
+import pandas as pd
+
+from analysis.mse_pregnancy_association.code.activity_counting import count_activities
+from analysis.mse_pregnancy_association.code.activity_strength import filtered_runs
+from analysis.mse_pregnancy_association.code.candidate_split_verifier import prepare_parent, decide_split
+from analysis.mse_pregnancy_association.code.global_event_ownership import reconcile
+from analysis.mse_pregnancy_association.code.normalized_activity import normalize_magnitude, score_salience
+from analysis.mse_pregnancy_association.code.partial_phase_events import detect_partial
+from analysis.mse_pregnancy_association.code.patient_activity_aggregation import candidate_nodes, observation_union
+from analysis.mse_pregnancy_association.code.measurement.io import jsonable
+
+ROOT = Path(__file__).resolve().parents[3]
+COUNT = 'significant_propagation_activity_count'
+RATE = 'significant_propagation_activity_frequency_cpm'
+VERSION = 'activity_count_v2_logic_fix_only'
+V2_FIELDS = [
+    'legacy_significant_propagation_activity_count',
+    'significant_propagation_activity_count_v1_legacy',
+    'significant_propagation_activity_frequency_cpm_v1_legacy',
+    *[COUNT + suffix for suffix in ('_min', '_max', '_range', '_exact', '_v2_exact')],
+    *[RATE + suffix for suffix in ('_min', '_max', '_range', '_exact', '_v2_exact')],
+    'resolved_propagation_activity_count', 'ambiguous_cross_wall_propagation_pairs',
+    'ambiguous_propagation_node_count', 'ambiguous_propagation_fraction',
+    'ambiguous_cross_wall_propagation_node_count', 'ambiguous_cross_wall_propagation_fraction',
+    'count_range_semantics', 'raw_observation_seconds', 'filtered_observation_seconds',
+    'filtered_observation_fraction', 'count_algorithm_version', 'reviewed', 'frozen_count_algorithm',
+]
+CODE = ['analysis/mse_pregnancy_association/code/batch_wave_counts.py', 'analysis/mse_pregnancy_association/code/activity_counting.py',
+        'analysis/mse_pregnancy_association/code/activity_strength.py', 'analysis/mse_pregnancy_association/code/candidate_split_verifier.py',
+        'analysis/mse_pregnancy_association/code/event_input_smoothing.py', 'analysis/mse_pregnancy_association/code/global_event_ownership.py',
+        'analysis/mse_pregnancy_association/code/normalized_activity.py', 'analysis/mse_pregnancy_association/code/partial_phase_events.py',
+        'analysis/mse_pregnancy_association/code/patient_activity_aggregation.py', 'analysis/mse_pregnancy_association/code/direction_identity_trial.py',
+        'analysis/mse_pregnancy_association/code/measurement/radial_events.py', 'analysis/mse_pregnancy_association/code/measurement/amplitude.py']
+
+
+def digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def save(path, value):
+    path = Path(path)
+    text = json.dumps(jsonable(value), ensure_ascii=False, indent=2, allow_nan=False)
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(text, encoding='utf-8')
+    temporary.replace(path)
+
+
+def count_map(maps, noise_floor):
+    a = np.asarray(maps['A'], float)
+    valid = np.asarray(maps['valid_mask'], bool) & np.isfinite(a)
+    t = np.asarray(maps['interval_center_s'], float)
+    s = np.asarray(maps['s'], float)
+    if a.shape != (len(t), 2, len(s)) or valid.shape != a.shape:
+        raise ValueError('Expected native time x two walls x section maps')
+    span = float(np.median(maps['interval_dt_s']))
+    dt = float(np.median(np.diff(t)))
+    filtered = filtered_runs(a, valid, t)
+    filtered_valid = np.isfinite(filtered)
+    observable = (filtered_valid[:, :, :-2] & filtered_valid[:, :, 1:-1] &
+                  filtered_valid[:, :, 2:]).any() if len(s) >= 3 else False
+    exposure = observation_union(dict(maps, valid_mask=valid), min_run_s=12.0)
+    if bool(observable) != bool(exposure['seconds'] > 0):
+        raise RuntimeError('Detector support and frequency denominator diverged')
+    support_metadata = {key: exposure[key] for key in
+                        ('raw_observation_seconds', 'filtered_observation_seconds',
+                         'filtered_observation_fraction')}
+    if not observable or exposure['seconds'] <= 0:
+        unavailable = {key: None for key in V2_FIELDS}
+        unavailable.update(support_metadata, count_algorithm_version=VERSION,
+                           reviewed=False, frozen_count_algorithm=False,
+                           count_range_semantics='identity ambiguity range, not statistical confidence interval')
+        return dict(status='no_analyzable_event_support', **{COUNT: None, RATE: None},
+                    **unavailable,
+                    effective_observation_seconds=exposure['seconds'],
+                    failure_reason='No three adjacent native sections with finite filtered support',
+                    observation=exposure)
+    normalized, metadata = normalize_magnitude(filtered, valid)
+    ownership = dict(walls=[])
+    selected = dict(walls=[])
+    evidence = []
+    for w in (0, 1):
+        report = detect_partial(a[:, w], valid[:, w], t, s, noise_floor=noise_floor)
+        report.pop('filtered_A')  # Arrays remain in the source NPZ, not JSON.
+        proposals = [decide_split(prepare_parent(a[:, w], valid[:, w], t, s, parent,
+                     noise_floor=noise_floor, measurement_span_s=span),
+                     minimum_adjacent_support=3) for parent in report['events']]
+        result = reconcile(report, proposals, t, valid[:, w], measurement_span_s=span)
+        scores = [score_salience(event, result['source_evidence'], normalized[:, w],
+                  valid[:, w], t) for event in result['event_proposals']]
+        ownership['walls'].append(dict(reconciliation=result))
+        selected['walls'].append(dict(wall=w, scores=scores))
+        evidence.append(dict(wall=w, parent_report=report, split_proposals=proposals,
+                             reconciliation=result, salience=scores))
+    nodes = candidate_nodes(selected, ownership)
+    result = count_activities(nodes, s, span, dt, exposure['seconds'])
+    result.update(support_metadata)
+    result.update(status='completed', failure_reason=None, normalization=metadata,
+                  observation=exposure, measurement_span_s=span, sample_dt_s=dt,
+                  native_section_count=len(s), sampled_s_range=[float(s[0]), float(s[-1])],
+                  requested_s_range=[0., 1.], walls=evidence,
+                  raw_valid_fraction=float(valid.mean()),
+                  unresolved_activity_rows=sum(bool(e['unresolved_related_nodes'])
+                                               for e in result['activities']),
+                  reviewed=False, frozen_count_algorithm=False)
+    return result
+
+
+def process_case(task):
+    case_id, source, destination, floor = task
+    begin = time.monotonic()
+    try:
+        before = digest(source)
+        with np.load(source, allow_pickle=False) as z:
+            maps = dict(z)
+        result = count_map(maps, floor)
+        if digest(source) != before:
+            raise RuntimeError('Source spacetime changed during counting')
+        result.update(case_id=case_id, source_spacetime=str(source),
+                      source_sha256=before, elapsed_s=time.monotonic()-begin)
+        save(destination, result)
+        keys = [COUNT, RATE, 'other_significant_activity_count',
+                'effective_observation_seconds', 'unresolved_activity_rows',
+                'raw_valid_fraction', 'sampled_s_range', 'native_section_count'] + V2_FIELDS
+        return dict(case_id=case_id, processing_status=result['status'],
+                    failure_reason=result.get('failure_reason'), result_path=str(destination),
+                    **{k: result.get(k) for k in keys})
+    except Exception as error:
+        # Per-case batch boundary only: retain the actual error, never zero.
+        failed = dict(case_id=case_id, processing_status='failed',
+                      failure_reason=f'{type(error).__name__}: {error}',
+                      traceback=traceback.format_exc(), **{COUNT: None, RATE: None})
+        save(destination, failed)
+        return dict({key: None for key in V2_FIELDS},
+                    **{k: v for k, v in failed.items() if k != 'traceback'})
+
+
+def run(args):
+    args.output.mkdir(parents=True, exist_ok=True)
+    inputs = pd.read_csv(args.features/'patient_results.csv', usecols=['case_id'])
+    if args.case_id:
+        inputs = inputs.loc[inputs['case_id'].isin(args.case_id)]
+    if not len(inputs) or inputs['case_id'].duplicated().any():
+        raise ValueError('Expected unique, nonempty examination IDs')
+    protocol_source = json.loads(args.noise_protocol.read_text(encoding='utf-8'))
+    floor = float(protocol_source['noise_floor_rate'])
+    protocol = dict(noise_floor_rate=floor, noise_protocol=str(args.noise_protocol),
+        noise_protocol_sha256=digest(args.noise_protocol), cutoff=.6, minimum_native_support=3,
+        parents='periodic FFT + observable partial phase',
+        split='existing measurement_span_mean, support=3, within parents only',
+        ownership='existing global ownership + direction-independent cross-wall identity',
+        propagation='existing arrival classifier with restored phase fits',
+        observation='union of detector-eligible measurement intervals: per-section continuous support >=12 s, then >=3 adjacent native sections in either wall',
+        count_algorithm_version=VERSION,
+        spatial_scope='all existing native sections, no resampling, no best-region selection',
+        direction_used_for_counting=False, outcomes_read=False, thresholds_changed=False,
+        algorithm_frozen=False, count_interpretation='significant propagation activity, not adjudicated total waves',
+        known_limitations=['local_once false positives', 'adjacent-event duplicate identity',
+                           'fixed .6 salience misses weak events'],
+        code_sha256={p: digest(ROOT/p) for p in CODE}, requested_cases=len(inputs))
+    save(args.output/'protocol_before_counting.json', protocol)
+    tasks = [(row.case_id, args.features/row.case_id/'spacetime_2s.npz',
+              args.output/(row.case_id+'.json'), floor) for row in inputs.itertuples()]
+    rows = []
+    if args.workers == 1:
+        rows = [process_case(task) for task in tasks]
+    else:
+        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+            futures = [pool.submit(process_case, task) for task in tasks]
+            for future in as_completed(futures):
+                rows.append(future.result())
+                save(args.output/'progress.json', dict(finished=len(rows), total=len(tasks)))
+    table = pd.DataFrame(rows).set_index('case_id').reindex(inputs['case_id']).reset_index()
+    table.to_csv(args.output/'wave_counts.csv', index=False, encoding='utf-8-sig')
+    table.to_excel(args.output/'wave_counts.xlsx', index=False)
+    if any(digest(ROOT/p) != h for p, h in protocol['code_sha256'].items()):
+        raise RuntimeError('Counting implementation changed during the batch')
+    summary = dict(total=len(table), status_counts=table['processing_status'].value_counts().to_dict(),
+        total_algorithm_defined_activities=int(table[COUNT].sum()),
+        legacy_total_significant_propagation_activity_count=int(table[COUNT].sum()),
+        total_significant_propagation_activity_count_range=[
+            int(table[COUNT + '_min'].sum()), int(table[COUNT + '_max'].sum())]
+            if table[COUNT].notna().any() else None,
+        exact_count_exams=int(table[COUNT + '_exact'].notna().sum()),
+        ambiguous_count_exams=int((table[COUNT + '_min'] < table[COUNT + '_max']).sum()),
+        count_algorithm_version=VERSION,
+        count_range_semantics='identity ambiguity range, not statistical confidence interval',
+        nonzero_exams=int((table[COUNT] > 0).sum()),
+        unavailable_exams=int(table[COUNT].isna().sum()),
+        frozen_algorithms_changed=False, thresholds_changed=False)
+    save(args.output/'summary.json', summary)
+    print(json.dumps(summary), flush=True)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--features', type=Path, required=True)
+    parser.add_argument('--noise-protocol', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--workers', type=int, default=2)
+    parser.add_argument('--case-id', action='append')
+    run(parser.parse_args())
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/batch_wave_counts.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/candidate_split_verifier.py | git_blob_sha=b7d4a5f038eca7f89c0c5b61b9ee2af729e82a51 ================
+"""Sandbox: split evidence strictly inside existing periodic/partial parents.
+
+No parent detection, global auxiliary scan, truth access or patient counting.
+Local phase nodes are passed to the unchanged ridge/pair measurement code.
+"""
+from copy import deepcopy
+from itertools import combinations
+import numpy as np
+from uterine_wave import radial_events as core
+from analysis.mse_pregnancy_association.code.event_input_smoothing import measurement_span_mean
+
+
+def _blocks(ids):
+    ids=np.asarray(ids,int)
+    return [x for x in np.split(ids,np.flatnonzero(np.diff(ids)!=1)+1) if len(x)]
+
+
+def _local_nodes(signal,valid,t,s,parent,span,floor):
+    context=np.flatnonzero((t>=parent['start_s']-span)&(t<=parent['end_s']+span))
+    times=t[context]
+    values=np.full((len(times),len(s)),np.nan)
+    columns=[[] for _ in s]
+    for col in parent['sections']:
+        supported=valid[context,col]&np.isfinite(signal[context,col])
+        for run_id,(begin,end) in enumerate(core._runs(supported)):
+            if end-begin<3:
+                continue
+            samples=int(2*np.floor(span/np.median(np.diff(times))/2)+1)
+            if end-begin<samples:
+                continue
+            # Only this parent's buffered slice is read by the auxiliary filter.
+            y=measurement_span_mean(signal[context[begin:end],col],times[begin:end],span_s=span)
+            values[begin:end,col]=y
+            edges=np.r_[0,np.flatnonzero(np.diff(y>=0))+1,len(y)]
+            for sequence,(a,b) in enumerate(zip(edges[:-1],edges[1:])):
+                peak=a+int(np.argmax(abs(y[a:b])))
+                amplitude=float(abs(y[peak]))
+                if amplitude<=max(float(floor[col]),1e-12) or peak in (a,b-1):
+                    continue
+                columns[col].append(dict(column=col,run_id=run_id,sequence=sequence,
+                    sign=1 if y[peak]>0 else -1,peak_index=int(begin+peak),
+                    peak_time_s=float(times[begin+peak]),amplitude=amplitude,
+                    first=int(begin+a),last=int(begin+b-1),
+                    start_s=float(times[begin+a]),end_s=float(times[begin+b-1]),
+                    left_censored=bool(a==0),right_censored=bool(b==len(y))))
+    return context,times,values,columns
+
+
+def prepare_parent(signal,valid,time_s,space,parent,*,noise_floor,measurement_span_s):
+    """Compute local evidence once; support=3/4/5 uses the SAME observations.
+
+    The parent uses its original time/section bounding box. Context is one
+    existing measurement span; child ARRIVALS must remain in the unexpanded
+    box. No neighboring sections or new parent envelopes are introduced.
+    """
+    y=np.asarray(signal,float);m=np.asarray(valid,bool)
+    t=np.asarray(time_s,float);s=np.asarray(space,float)
+    ids=np.asarray(parent['sections'],int)
+    if (y.shape!=m.shape or y.shape!=(len(t),len(s)) or len(t)<3 or
+        np.any(np.diff(t)<=0) or not np.allclose(np.diff(t),np.median(np.diff(t)),rtol=1e-5,atol=1e-9) or
+        len(ids)<1 or np.any(np.diff(ids)<=0) or ids.min()<0 or ids.max()>=len(s) or
+        not np.isfinite(measurement_span_s) or measurement_span_s<=0):
+        raise ValueError('Expected native uniform maps, ordered parent sections and positive measurement span')
+    floor=np.broadcast_to(np.asarray(noise_floor,float),(len(s),))
+    if not np.isfinite(floor).all() or np.any(floor<0) or parent['start_s']>parent['end_s']:
+        raise ValueError('Invalid frozen noise reference or parent time bounds')
+    context,times,values,columns=_local_nodes(y,m,t,s,parent,measurement_span_s,floor)
+    ridges=core._ridges(columns,times,s) if len(times)>=3 else []
+    edges=core._phase_edges(ridges)
+    config=core.RadialWaveConfig()
+    measured=[]
+    # Keep both physiological polarities available in the observations. This
+    # trial verifies two positive->negative maxima, the already frozen raw
+    # length-bump reference. It does not declare negative-first activity false.
+    for key,edge in edges.items():
+        if ridges[edge['first']]['sign']!=1:
+            continue
+        event=core._measure_pair(dict(edge),ridges,values,times,s,config)
+        kept=[col for col,arrival in zip(event['sections'],event['arrival_time_s'])
+              if parent['start_s']<=arrival<=parent['end_s']]
+        for block in _blocks(kept):
+            if len(block)<3:
+                continue
+            local_edge=dict(edge,columns=block.tolist())
+            item=core._measure_pair(local_edge,ridges,values,times,s,config)
+            item.update(_edge=local_edge,_key=key)
+            measured.append(item)
+    # Local event rank is derived from actual eligible successive phases, not
+    # the injected truth or an optimized lag. It exposes identity switching.
+    ordinals={};turn_counts={}
+    for col,column in enumerate(columns):
+        turns=[]
+        for first,second in zip(column[:-1],column[1:]):
+            if (first['sign']!=1 or second['sign']!=-1 or first['run_id']!=second['run_id'] or
+                second['sequence']-first['sequence']!=1):
+                continue
+            k,k2=first['last'],second['first']
+            crossing=times[k]-values[k,col]/(values[k2,col]-values[k,col])*(times[k2]-times[k])
+            if parent['start_s']<=crossing<=parent['end_s']:
+                turns.append((first,second))
+        turn_counts[col]=len(turns)
+        for rank,(first,second) in enumerate(turns):
+            ordinals[(col,first['run_id'],first['sequence'],second['sequence'])]=rank
+    node_maps={r['id']:{n['column']:n for n in r['nodes']} for r in ridges}
+    options=[]
+    for left,right in combinations(measured,2):
+        if set(left['phase_ridge_ids'])&set(right['phase_ridge_ids']):
+            continue
+        common=sorted(set(left['sections'])&set(right['sections']))
+        for block in _blocks(common):
+            if len(block)<3:
+                continue
+            a,b=left,right
+            arrivals_a=dict(zip(a['sections'],a['arrival_time_s']))
+            arrivals_b=dict(zip(b['sections'],b['arrival_time_s']))
+            differences=np.array([arrivals_b[c]-arrivals_a[c] for c in block])
+            if np.all(differences<0):
+                a,b=b,a
+                differences=-differences
+            conflicts=[]
+            if not np.all(differences>0):
+                conflicts.append('children_cross_in_time')
+            ranks=[[],[]]
+            for col in block:
+                nodes=[node_maps[rid][int(col)] for item in (a,b) for rid in item['phase_ridge_ids']]
+                if len({n['run_id'] for n in nodes})!=1:
+                    conflicts.append('different_continuous_runs')
+                    continue
+                if not nodes[1]['sequence']<nodes[2]['sequence']:
+                    conflicts.append('interleaved_phase_sequences')
+                for index in (0,1):
+                    first,second=nodes[2*index:2*index+2]
+                    rank=ordinals.get((int(col),first['run_id'],first['sequence'],second['sequence']))
+                    if rank is None:
+                        conflicts.append('unresolved_local_turn_identity')
+                    else:
+                        ranks[index].append(rank)
+            if any(len(set(r))!=1 for r in ranks):
+                conflicts.append('local_event_rank_switch')
+            if all(ranks) and any(y!=x+1 for x,y in zip(*ranks)):
+                conflicts.append('additional_intervening_activity')
+            children=[]
+            for item in (a,b):
+                edge=dict(item['_edge'],columns=block.tolist())
+                child=core._measure_pair(edge,ridges,values,times,s,config)
+                if any(flag in child['quality_flags'] for flag in ('nonmonotone_arrivals','phase_direction_conflict')):
+                    conflicts.append('inconsistent_child_arrival_order')
+                selected,_=core._pair_phases(ridges,{item['_key']:edge})
+                propagation=bool(selected and child['classification'] in ('C2F','F2C') and
+                    'phase_direction_conflict' not in child['quality_flags'] and
+                    'nonmonotone_arrivals' not in child['quality_flags'])
+                child.update(parent_candidate_id=parent['event_id'],activity_split_supported=True,
+                    propagation_supported=propagation,
+                    fitted_classification=child['classification'],
+                    classification=child['classification'] if propagation else 'activity_only',
+                    direction=child['classification'] if propagation else None,
+                    fitted_velocity_paths_per_s=child['velocity_paths_per_s'],
+                    velocity_paths_per_s=child['velocity_paths_per_s'] if propagation else None,
+                    speed_candidate_paths_per_s=child['velocity_paths_per_s'] if propagation else None,
+                    supporting_phase_evidence=[dict(section=int(c),
+                        phases=[dict(sign=node_maps[r][int(c)]['sign'],
+                            peak_s=node_maps[r][int(c)]['peak_time_s'],
+                            observed_start_s=node_maps[r][int(c)]['start_s'],
+                            observed_end_s=node_maps[r][int(c)]['end_s'],
+                            run_id=node_maps[r][int(c)]['run_id'],
+                            amplitude=node_maps[r][int(c)]['amplitude']) for r in child['phase_ridge_ids']]) for c in block],
+                    propagation_source='Local nodes through unchanged ridge/pair measurement and pairing',
+                    reviewed=False)
+                children.append(child)
+            options.append(dict(identity=tuple(a['phase_ridge_ids']+b['phase_ridge_ids']),
+                                common_sections=block.tolist(),children=children,
+                                conflicts=sorted(set(conflicts))))
+    return dict(parent=deepcopy(parent),context_time_range_s=[float(times[0]),float(times[-1])] if len(times) else None,
+        context_expansion_s=float(measurement_span_s),turn_counts=turn_counts,options=options,
+        local_phase_ridges=[dict(ridge_id=r['id'],sign=r['sign'],sections=[n['column'] for n in r['nodes']],
+                                peak_time_s=[n['peak_time_s'] for n in r['nodes']]) for r in ridges],
+        local_observations=dict(time_s=times,sections=ids,smoothed_A=values[:,ids],
+                                valid_mask=m[context][:,ids],auxiliary_valid_mask=np.isfinite(values[:,ids]),
+                                raw_A=y[context][:,ids]))
+
+
+def decide_split(prepared,*,minimum_adjacent_support=3,include_signals=False):
+    if minimum_adjacent_support not in (3,4,5):
+        raise ValueError('This fixed experiment permits adjacent support 3, 4 or 5')
+    parent=prepared['parent']
+    eligible=[p for p in prepared['options'] if len(p['common_sections'])>=minimum_adjacent_support]
+    identities={p['identity'] for p in eligible if not p['conflicts']}
+    if len(identities)==1 and not any(p['conflicts'] for p in eligible):
+        selected=max((p for p in eligible if not p['conflicts']),key=lambda p:len(p['common_sections']))
+        status='split_two';reason='two ordered complete local phase sequences on adjacent native sections'
+        children=deepcopy(selected['children'])
+        for index,child in enumerate(children,1):
+            child['event_id']=f"{parent['event_id']}_child_{index}"
+    else:
+        children=[]
+        tentative=any(n>=2 for n in prepared['turn_counts'].values())
+        status='split_ambiguous' if tentative or eligible else 'keep_single'
+        reason=('competing identities or inconsistent local order' if eligible else
+                'second-turn evidence lacks shared adjacent support' if tentative else 'no supported internal second activity')
+    result=dict(parent_candidate_id=parent['event_id'],parent=deepcopy(parent),
+        split_status=status,reason=reason,minimum_adjacent_support=minimum_adjacent_support,
+        context_time_range_s=prepared['context_time_range_s'],
+        context_expansion_s=prepared['context_expansion_s'],
+        child_1=children[0] if children else None,child_2=children[1] if children else None,
+        tentative_pair_count=len(eligible),
+        conflict_reasons=sorted({flag for p in eligible for flag in p['conflicts']}),
+        local_turn_counts=prepared['turn_counts'],event_count=None,event_frequency=None)
+    if include_signals:
+        result['local_observations']=prepared['local_observations']
+    return result
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/candidate_split_verifier.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/direction_identity_trial.py | git_blob_sha=4420d5235266f822b89ac2fb4a714e5fdeadcc85 ================
+"""Revalidate retained-direction evidence before cross-wall direction reporting.
+
+This is an experimental reconciliation layer.  It does not create candidates,
+change the fixed salience cutoff, or replace formal event outputs.
+"""
+from copy import deepcopy
+from itertools import combinations
+
+import numpy as np
+
+from analysis.mse_pregnancy_association.code.measurement.radial_events import RadialWaveConfig, _describe_arrival
+
+
+DIRECTIONS = ('C2F', 'F2C')
+
+
+def _longest_adjacent(ids):
+    ids = np.asarray(sorted(set(ids)), int)
+    return max((len(block) for block in np.split(
+        ids, np.flatnonzero(np.diff(ids) != 1) + 1)), default=0)
+
+
+def _adjacent_blocks(ids):
+    ids = np.asarray(sorted(set(ids)), int)
+    if not len(ids):
+        return []
+    return [block for block in np.split(
+        ids, np.flatnonzero(np.diff(ids) != 1) + 1) if len(block)]
+
+
+def _phase_subset_matches(left, right, tolerance_s):
+    """Allow extra local phases while matching the smaller signed sequence."""
+    smaller, larger = (left, right) if len(left) <= len(right) else (right, left)
+    smaller = sorted(smaller, key=lambda phase: phase['peak_s'])
+    larger = sorted(larger, key=lambda phase: phase['peak_s'])
+    first_available = 0
+    matches = []
+    for phase in smaller:
+        choices = [(abs(phase['peak_s'] - larger[j]['peak_s']), j)
+                   for j in range(first_available, len(larger))
+                   if phase['sign'] == larger[j]['sign']]
+        if not choices:
+            return False, matches
+        distance, index = min(choices)
+        if distance > tolerance_s:
+            return False, matches
+        first_available = index + 1
+        matches.append((phase['peak_s'], larger[index]['peak_s']))
+    return bool(matches), matches
+
+
+def compare_identity_without_direction(a, b, span_s, sample_dt_s):
+    """Compare activity identity before using either wall's direction label."""
+    if a['wall'] == b['wall']:
+        raise ValueError('Identity comparison requires different walls')
+    tolerance = float(span_s + sample_dt_s)
+    shared = sorted(set(a['sections']) & set(b['sections']))
+    matched, near, conflicts = [], [], []
+    for section in shared:
+        arrival_near = (a['arrival_marker'] == b['arrival_marker'] and
+                        abs(a['arrival'][section] - b['arrival'][section]) <= tolerance)
+        phases_match, _ = _phase_subset_matches(
+            a['profile'][section], b['profile'][section], tolerance)
+        if arrival_near or phases_match:
+            near.append(section)
+        if arrival_near and phases_match:
+            matched.append(section)
+        elif arrival_near or phases_match:
+            conflicts.append(section)
+    supported = _longest_adjacent(matched) >= 3
+    relation = ('shared_identity_supported' if supported else
+                'unresolved' if near else 'no_shared_identity_evidence')
+    return dict(node_a=a['node_id'], node_b=b['node_id'], relation=relation,
+                shared_sections=shared, matched_sections=matched,
+                near_sections=near, conflict_sections=conflicts,
+                original_directions=[a['direction'], b['direction']],
+                original_direction_conflict=(a['direction'] in DIRECTIONS and
+                                             b['direction'] in DIRECTIONS and
+                                             a['direction'] != b['direction']),
+                tolerance_s=tolerance,
+                rule='>=3 adjacent arrival-and-phase matches; direction not used for identity')
+
+
+def revalidate_retained_direction(node, s, sample_dt_s, config=RadialWaveConfig()):
+    """Refit each contiguous retained block; never bridge a salience gap."""
+    sections = np.asarray(sorted(node['sections']), int)
+    blocks = _adjacent_blocks(sections)
+    measurements = []
+    for block in blocks:
+        arrival = np.asarray([node['arrival'][int(section)] for section in block], float)
+        measurement = _describe_arrival(
+            block, arrival, np.asarray(s, float), float(sample_dt_s), [], config)
+        measurements.append(dict(sections=block.tolist(), arrival_time_s=arrival.tolist(),
+                                 measurement=measurement))
+    block_directions = [item['measurement']['classification'] for item in measurements
+                        if item['measurement']['classification'] in DIRECTIONS]
+    refit = block_directions[0] if len(set(block_directions)) == 1 else None
+    original = node['direction'] if node['direction'] in DIRECTIONS else None
+    if original is None:
+        status, supported = 'original_direction_unresolved', None
+    elif any(direction != original for direction in block_directions):
+        status, supported = 'retained_support_conflicts_with_original', None
+    elif any(direction == original for direction in block_directions):
+        status, supported = 'retained_support_agrees', original
+    else:
+        status, supported = 'retained_support_unresolved', None
+    return dict(node_id=node['node_id'], original_direction=original,
+                retained_refit_direction=refit, supported_direction=supported,
+                direction_status=status, retained_sections=sections.tolist(),
+                retained_contiguous_blocks=[block.tolist() for block in blocks],
+                block_direction_evidence=measurements,
+                direction_rule=('each contiguous retained block refit separately; '
+                                'opposing block makes direction unresolved'))
+
+
+def reconcile_identity_then_direction(nodes, s, span_s, sample_dt_s):
+    """Form cross-wall identities first, then combine revalidated directions."""
+    comparisons = [compare_identity_without_direction(a, b, span_s, sample_dt_s)
+                   for a, b in combinations(nodes, 2) if a['wall'] != b['wall']]
+    choices = {node['node_id']: [] for node in nodes}
+    uncertain = {node['node_id']: [] for node in nodes}
+    for edge in comparisons:
+        target = choices if edge['relation'] == 'shared_identity_supported' else (
+            uncertain if edge['relation'] == 'unresolved' else None)
+        if target is not None:
+            target[edge['node_a']].append(edge['node_b'])
+            target[edge['node_b']].append(edge['node_a'])
+    pairs = {tuple(sorted((node_id, matches[0])))
+             for node_id, matches in choices.items()
+             if len(matches) == 1 and choices[matches[0]] == [node_id]
+             and not uncertain[node_id] and not uncertain[matches[0]]}
+    lookup = {node['node_id']: node for node in nodes}
+    used, groups = set(), []
+    for left, right in sorted(pairs):
+        groups.append([lookup[left], lookup[right]])
+        used.update((left, right))
+    groups.extend([[node] for node in nodes if node['node_id'] not in used])
+    groups.sort(key=lambda group: (min(np.median(list(node['arrival'].values()))
+                                       for node in group), group[0]['node_id']))
+
+    activities = []
+    for index, group in enumerate(groups, 1):
+        evidence = [revalidate_retained_direction(node, s, sample_dt_s) for node in group]
+        supported = {item['supported_direction'] for item in evidence
+                     if item['supported_direction'] in DIRECTIONS}
+        original = {node['direction'] for node in group if node['direction'] in DIRECTIONS}
+        if len(original) > 1:
+            direction, direction_status = None, 'cross_wall_direction_conflict'
+        elif len(supported) == 1:
+            direction = next(iter(supported))
+            direction_status = ('cross_wall_direction_agreement' if len(group) == 2 and
+                                len([item for item in evidence if item['supported_direction']]) == 2
+                                else 'single_wall_direction_support')
+        elif len(supported) > 1:
+            direction, direction_status = None, 'cross_wall_direction_conflict'
+        else:
+            direction, direction_status = None, 'direction_unresolved_after_retained_refit'
+        members = [node['node_id'] for node in group]
+        related = sorted({other for member in members
+                          for other in uncertain[member] + choices[member]
+                          if other not in members})
+        phases = [phase for node in group for values in node['profile'].values()
+                  for phase in values]
+        activity_id=f'activity_{index:03d}'
+        activities.append(dict(activity_id=activity_id,patient_candidate_id=activity_id,
+            source_nodes=members, walls=sorted({node['wall'] for node in group}),
+            cross_wall_identity=len(group) == 2, direction=direction,
+            direction_status=direction_status, direction_evidence=evidence,
+            classification=('propagation' if direction else 'direction_unresolved_activity'),
+            ownership_status=('unresolved_cross_wall' if related else
+                              'shared_identity' if len(group) == 2 else 'single_wall'),
+            unresolved_related_nodes=related,
+            evidence_start_s=min(phase['start_s'] for phase in phases),
+            evidence_end_s=max(phase['end_s'] for phase in phases),
+            source_measurements=deepcopy(group), reviewed=False))
+    return dict(activities=activities, identity_comparisons=comparisons,
+                input_candidate_rows=len(nodes), activity_rows=len(activities),
+                cross_wall_identity_pairs=len(pairs),
+                direction_counts={direction: sum(item['direction'] == direction
+                                                  for item in activities)
+                                  for direction in DIRECTIONS},
+                direction_unresolved_rows=sum(item['direction'] is None for item in activities),
+                formal_event_count=None, formal_event_frequency_cpm=None,
+                experimental=True)
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/direction_identity_trial.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/event_input_smoothing.py | git_blob_sha=ec82144daf4d286c5f6c3716c6ca1c3bdfe14192 ================
+"""Event-input ablation only: local averaging at the measurement time scale.
+
+This is not the physiological-band amplitude/ER filter. The detector applies
+it separately inside each continuous valid run; missing samples are not filled.
+"""
+import numpy as np
+
+
+def measurement_span_mean(values, times, *, span_s):
+    """Demean and apply an odd centered boxcar near one measurement interval.
+
+    Reflection pads only the short kernel edge; padded values are not observed
+    support. There is no spectral band selection, polynomial detrending or new
+    duration parameter independent of the existing radial measurement span.
+    """
+    y=np.asarray(values,float);t=np.asarray(times,float)
+    if y.ndim<1 or y.shape[0]!=len(t) or len(t)<3:
+        raise ValueError('Expected time-first values on at least three timestamps')
+    differences=np.diff(t)
+    if (not np.isfinite(y).all() or not np.isfinite(t).all() or
+        np.any(differences<=0) or not np.allclose(differences,np.median(differences),rtol=1e-5,atol=1e-9) or
+        not np.isfinite(span_s) or span_s<=0):
+        raise ValueError('Expected finite complete values, uniform time and positive measurement span')
+    samples=int(2*np.floor(span_s/np.median(differences)/2)+1)
+    if samples>len(t):
+        raise ValueError('Smoothing span exceeds the continuous input run')
+    half=samples//2
+    centered=y-y.mean(axis=0,keepdims=True)
+    padded=np.pad(centered,[(half,half)]+[(0,0)]*(y.ndim-1),mode='reflect')
+    integral=np.concatenate([np.zeros_like(padded[:1]),np.cumsum(padded,axis=0)],axis=0)
+    return (integral[samples:]-integral[:-samples])/samples
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/event_input_smoothing.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/global_event_ownership.py | git_blob_sha=8842bfe346b6a0c335abd99e2e5099903626d2b4 ================
+"""Sandbox global ownership of frozen parents and already-local split children.
+
+No image/signal detection, filter changes, injected truth or patient counts.
+Global means all candidates in ONE wall. Cross-wall event pairing is separate.
+"""
+from copy import deepcopy
+from itertools import combinations
+import numpy as np
+
+
+def _runs(mask):
+    return np.flatnonzero(np.diff(np.r_[False,mask,False])).reshape(-1,2)
+
+
+def build_entities(report,proposals,time_s,valid):
+    t=np.asarray(time_s,float);m=np.asarray(valid,bool)
+    if m.ndim!=2 or len(t)!=len(m) or len(t)<3 or np.any(np.diff(t)<=0):
+        raise ValueError('Expected native time x section validity for one wall')
+    epochs={c:_runs(m[:,c]) for c in range(m.shape[1])}
+    def phase_node(col,p):
+        index=int(np.argmin(abs(t-p['peak_s'])))
+        epoch=next(((int(a),int(b)) for a,b in epochs[col] if a<=index<b),None)
+        return dict(sign=int(p['sign']),peak_s=float(p['peak_s']),
+            start_s=float(p['observed_start_s']),end_s=float(p['observed_end_s']),epoch=epoch)
+    fragments={f['fragment_id']:f for f in report['fragments']}
+    parents={e['event_id']:e for e in report['events']}
+    entities={};parent_to_base={}
+    for group in report['proposed_events']:
+        eid='base:'+group['proposal_id'];profile={};arrival={}
+        members=[parents[k] for k in group['fragment_ids']]
+        for fid in group['fragment_ids']:
+            f=fragments[fid];parent_to_base[fid]=eid
+            for p in f['local_phase_support']:
+                c=int(p['section']);profile.setdefault(c,[]).append(phase_node(c,p))
+            arrival.update(zip(f['sections'],f['arrival_time_s']))
+        for c in profile:
+            unique={(p['sign'],p['peak_s']):p for p in profile[c]}
+            profile[c]=sorted(unique.values(),key=lambda p:p['peak_s'])
+        canonical=max(members,key=lambda e:(e['evidence_kind']=='paired_phase',len(e['sections'])))
+        entities[eid]=dict(entity_id=eid,source_kind='existing',source_parents=list(group['fragment_ids']),
+            complete=all(len(ps)==2 for ps in profile.values()),profile=profile,arrival=arrival,
+            direction=canonical['classification'] if canonical['classification'] in ('C2F','F2C') else None,
+            canonical_measurement=deepcopy(canonical),original_measurements=deepcopy(members),
+            phase_ridge_provenance=[dict(parent_id=e['event_id'],phase_ridge_ids=e['phase_ridge_ids']) for e in members])
+    splits=[]
+    for proposal in proposals:
+        if proposal['split_status']!='split_two':
+            continue
+        children=[]
+        for child in (proposal['child_1'],proposal['child_2']):
+            eid='child:'+child['event_id'];profile={}
+            for row in child['supporting_phase_evidence']:
+                c=int(row['section']);profile[c]=[phase_node(c,p) for p in row['phases']]
+            entities[eid]=dict(entity_id=eid,source_kind='child',source_parents=[proposal['parent_candidate_id']],
+                complete=True,profile=profile,arrival=dict(zip(child['sections'],child['arrival_time_s'])),
+                direction=child['direction'],canonical_measurement=deepcopy(child),original_measurements=[],
+                phase_ridge_provenance=[dict(parent_id=proposal['parent_candidate_id'],
+                    source='parent_local_auxiliary',phase_ridge_ids=child['phase_ridge_ids'])])
+            children.append(eid)
+        splits.append(dict(parent_id=proposal['parent_candidate_id'],base_id=parent_to_base[proposal['parent_candidate_id']],
+                           children=children))
+    return entities,splits
+
+
+def compare_identity(a,b,*,sample_dt_s,measurement_span_s):
+    """Prioritized evidence, not a scalar score or fixed global-time radius.
+
+    Existing 3-section connector support is reused. Both signs/sequence,
+    physical continuity, local arrival and peak trajectories must agree.
+    Uncomparable/partial evidence is retained rather than forcibly merged.
+    """
+    shared=sorted(set(a['profile'])&set(b['profile']))
+    tolerance=measurement_span_s+sample_dt_s
+    evidence=dict(shared_sections=shared,tolerance_s=tolerance,matched_sections=[],
+                  exact_phase_nodes=0,phase_sequence_conflict=False,
+                  direction_conflict=bool(a['direction'] and b['direction'] and a['direction']!=b['direction']))
+    if not shared:
+        return dict(relation='unrelated',priority=0,reason='no shared native support',**evidence)
+    paired=a['complete'] and b['complete']
+    exact=0;matched=[];near=[];contradictions=[]
+    for c in shared:
+        left,right=a['profile'][c],b['profile'][c]
+        signs_a=[p['sign'] for p in left];signs_b=[p['sign'] for p in right]
+        paired_here=len(left)==2 and len(right)==2
+        if paired_here and signs_a!=signs_b:
+            evidence['phase_sequence_conflict']=True
+            continue
+        pairs=[]
+        for p in left:
+            options=[q for q in right if q['sign']==p['sign']]
+            if len(options)==1:
+                pairs.append((p,options[0]))
+        if not pairs:
+            continue
+        distances=[abs(p['peak_s']-q['peak_s']) for p,q in pairs]
+        if min(distances)<=tolerance:
+            near.append(c)
+        epoch_ok=all(p['epoch'] is not None and p['epoch']==q['epoch'] for p,q in pairs)
+        bounds_ok=all(q['start_s']-sample_dt_s<=p['peak_s']<=q['end_s']+sample_dt_s and
+                      p['start_s']-sample_dt_s<=q['peak_s']<=p['end_s']+sample_dt_s for p,q in pairs)
+        peaks_ok=max(distances)<=tolerance
+        arrival_ok=not paired_here or abs(a['arrival'][c]-b['arrival'][c])<=tolerance
+        if epoch_ok and bounds_ok and peaks_ok and arrival_ok:
+            matched.append(c)
+            exact+=sum(p['peak_s']==q['peak_s'] for p,q in pairs)
+        elif min(distances)<=tolerance:
+            contradictions.append(c)
+    evidence.update(matched_sections=matched,exact_phase_nodes=exact)
+    if evidence['phase_sequence_conflict']:
+        return dict(relation='distinct',priority=0,reason='different ordered phase sequences',**evidence)
+    blocks=np.split(np.asarray(matched,int),np.flatnonzero(np.diff(matched)!=1)+1)
+    enough=max((len(x) for x in blocks),default=0)>=3
+    if enough and not contradictions and len(matched)==len(shared):
+        relation='duplicate' if paired else 'partial_duplicate'
+        priority=3 if paired and exact==2*len(shared) else 2 if paired else 1
+        return dict(relation=relation,priority=priority,reason='same local phase and arrival structure',**evidence)
+    if near:
+        return dict(relation='ambiguous',priority=0,reason='partial or conflicting local phase support',**evidence)
+    return dict(relation='distinct',priority=0,reason='separate local phase timing',**evidence)
+
+
+def _rank(e):
+    # Complete evidence first, then larger native support; existing evidence
+    # wins ties. A smaller local child cannot overwrite a wider complete parent.
+    return (e['complete'],len(e['profile']),
+            e['source_kind']=='existing',e['entity_id'])
+
+
+def reconcile(report,proposals,time_s,valid,*,measurement_span_s):
+    entities,splits=build_entities(report,proposals,time_s,valid)
+    dt=float(np.median(np.diff(time_s)))
+    relations={}
+    def compare(x,y):
+        key=tuple(sorted((x,y)))
+        if key not in relations:
+            relations[key]=compare_identity(entities[x],entities[y],sample_dt_s=dt,
+                                            measurement_span_s=measurement_span_s)
+        return relations[key]
+    def duplicate(x,y):
+        return compare(x,y)['relation'] in ('duplicate','partial_duplicate')
+    bases=[k for k,e in entities.items() if e['source_kind']=='existing']
+    base_ambiguity={}
+    for x,y in combinations(bases,2):
+        if compare(x,y)['relation']=='ambiguous':
+            for k,other in ((x,y),(y,x)):
+                base_ambiguity.setdefault(k,dict(reason='conflicting original ownership evidence',possible_owners=[]))['possible_owners'].append(other)
+    for k in bases:
+        choices=[p for p in bases if p!=k and entities[p]['complete'] and duplicate(k,p)]
+        if any(not duplicate(a,b) for a,b in combinations(choices,2)):
+            previous=base_ambiguity.get(k,{}).get('possible_owners',[])
+            base_ambiguity[k]=dict(reason='original evidence matches conflicting complete events',possible_owners=sorted(set(previous+choices)))
+    # Reconcile original evidence first. No child can serve as a transitive
+    # bridge that merges otherwise conflicting original event identities.
+    base_clusters={k:[k] for k in bases};base_owner={k:k for k in bases}
+    for x,y in combinations(sorted(bases,key=lambda k:_rank(entities[k]),reverse=True),2):
+        cx,cy=base_owner[x],base_owner[y]
+        if cx==cy or x in base_ambiguity or y in base_ambiguity or not duplicate(x,y):
+            continue
+        union=base_clusters[cx]+base_clusters[cy]
+        anchor=max(union,key=lambda k:_rank(entities[k]))
+        if not all(k==anchor or duplicate(anchor,k) for k in union):
+            continue
+        if any(compare(p,q)['relation'] in ('ambiguous','distinct') for p,q in combinations(union,2)):
+            continue
+        base_clusters.pop(cx);base_clusters.pop(cy);base_clusters[anchor]=union
+        for k in union:base_owner[k]=anchor
+    owners={};uncertain={};attachments={k:[] for k in base_clusters}
+    for k,e in entities.items():
+        if e['source_kind']!='child':continue
+        definite=[];possible=[]
+        for anchor,members in base_clusters.items():
+            relation=compare(k,anchor)
+            if relation['relation'] in ('duplicate','partial_duplicate'):
+                definite.append((anchor,relation['priority']))
+            elif relation['relation']=='ambiguous':
+                possible.append(anchor)
+        highest=max((priority for _,priority in definite),default=0)
+        strongest=[anchor for anchor,priority in definite if priority==highest]
+        # Complete/exact evidence takes precedence over incomplete secondary
+        # overlap. A partial match alone cannot resolve competing owners.
+        if len(strongest)==1 and (highest>=2 or not any(p!=strongest[0] for p in possible)):
+            owners[k]=strongest[0]
+        elif definite or possible:
+            uncertain[k]=dict(reason='multiple or incomplete existing ownership',
+                              possible_owners=sorted(set([a for a,_ in definite]+possible)))
+    must_separate={frozenset(s['children']) for s in splits}
+    viable=[];actions=[]
+    for split in splits:
+        a,b=split['children']
+        if a in uncertain or b in uncertain or (a in owners and b in owners and owners[a]==owners[b]):
+            actions.append(dict(**split,status='ambiguous',reason='conflicting child ownership',child_owners=None))
+        else:viable.append(split)
+    unmatched=sorted({c for s in viable for c in s['children'] if c not in owners},
+                     key=lambda k:_rank(entities[k]),reverse=True)
+    new_clusters={};new_owner={}
+    for child in unmatched:
+        candidates=[anchor for anchor,members in new_clusters.items()
+            if duplicate(child,anchor) and all(frozenset((child,k)) not in must_separate for k in members)
+            and not any(compare(child,k)['relation'] in ('ambiguous','distinct') for k in members)]
+        possible=[anchor for anchor in new_clusters if compare(child,anchor)['relation']=='ambiguous']
+        if len(candidates)==1 and not possible:
+            anchor=candidates[0];new_clusters[anchor].append(child);new_owner[child]=anchor
+        elif candidates or possible:
+            uncertain[child]=dict(reason='conflicting new-child ownership',possible_owners=sorted(set(candidates+possible)))
+        else:
+            new_clusters[child]=[child];new_owner[child]=child
+    accepted=[]
+    for split in viable:
+        a,b=split['children']
+        if a in uncertain or b in uncertain:
+            actions.append(dict(**split,status='ambiguous',reason='new-child identity ambiguity',child_owners=None));continue
+        assigned=[owners[c] if c in owners else new_owner[c] for c in (a,b)]
+        if assigned[0]==assigned[1]:
+            actions.append(dict(**split,status='ambiguous',reason='two children cannot share one identity',child_owners=None));continue
+        action=dict(**split,status='reuse_existing' if all(c in owners for c in (a,b)) else 'accept_split',
+                    reason='one identity per supported activity',child_owners=assigned)
+        actions.append(action);accepted.append(action)
+    # Resolve transaction dependencies monotonically: a rejected split cannot
+    # erase an existing group or act as the sole bridge for another split.
+    while True:
+        active_children={c for a in accepted for c in a['children']}
+        referenced={owner for a in accepted for owner in a['child_owners']}
+        split_parents={a['parent_id'] for a in accepted}
+        retired=set()
+        for anchor,members in base_clusters.items():
+            source_parents={p for k in members for p in entities[k]['source_parents']}
+            complete_parents={m['event_id'] for k in members for m in entities[k]['original_measurements']
+                              if m['evidence_kind']=='paired_phase'}
+            # A remaining unpaired fragment is evidence, not an independently
+            # complete event that can lock a decomposed container forever.
+            # Preserve it explicitly as unresolved, never silently discard it.
+            if (source_parents&split_parents and complete_parents<=split_parents and anchor not in referenced):
+                retired.add(anchor)
+        reject=set()
+        for a in accepted:
+            source=base_owner[a['base_id']]
+            if source not in a['child_owners'] and source not in retired:
+                reject.add(a['parent_id'])
+                a['reason']='source group is still independently owned; cannot add two more identities'
+        for anchor,members in new_clusters.items():
+            active=[c for c in members if c in active_children]
+            if not active:continue
+            canonical=max(active,key=lambda k:_rank(entities[k]))
+            if any(c!=canonical and not duplicate(c,canonical) for c in active):
+                for a in accepted:
+                    if anchor in a['child_owners']:
+                        reject.add(a['parent_id']);a['reason']='new identity depends on rejected evidence bridge'
+        if not reject:break
+        for a in accepted:
+            if a['parent_id'] in reject:a['status']='ambiguous';a['child_owners']=None
+        accepted=[a for a in accepted if a['parent_id'] not in reject]
+    finals=[];source_to_final={}
+    def emit(anchor,members,kind):
+        canonical=max(members,key=lambda k:_rank(entities[k]));e=entities[canonical]
+        eid=f'event_proposal_{len(finals)+1:03d}'
+        source_parents=sorted({p for k in members for p in entities[k]['source_parents']})
+        finals.append(dict(event_proposal_id=eid,ownership_status='merged_evidence' if len(members)>1 else kind,
+            canonical_source_entity_id=canonical,source_entity_ids=sorted(members),source_parent_ids=source_parents,
+            from_split=any(entities[k]['source_kind']=='child' for k in members),
+            supporting_sections=sorted(e['profile']),arrival_time_s=[e['arrival'][c] for c in sorted(e['profile'])],
+            direction=e['direction'],canonical_measurement=deepcopy(e['canonical_measurement']),
+            preserved_original_measurements=[deepcopy(m) for k in members for m in entities[k]['original_measurements']],
+            phase_ridge_provenance=[deepcopy(p) for k in members for p in entities[k]['phase_ridge_provenance']],
+            ownership_conflicts=[],event_count=None,event_frequency=None,reviewed=False))
+        for k in members:source_to_final[k]=eid
+    for anchor,members in sorted(base_clusters.items()):
+        if anchor in retired:continue
+        children=[c for c in active_children if owners.get(c)==anchor]
+        emit(anchor,members+sorted(children),'retained_existing')
+    for anchor,members in sorted(new_clusters.items()):
+        active=[c for c in members if c in active_children]
+        if active:emit(anchor,active,'retained_new_child')
+    for action in actions:
+        action['final_event_ids']=[source_to_final.get(c) for c in action['children']] if action['status']!='ambiguous' else []
+    ambiguity=[dict(source_entity_id=k,**v) for k,v in sorted({**base_ambiguity,**uncertain}.items())]
+    for event in finals:
+        event['ownership_conflicts']=[a['source_entity_id'] for a in ambiguity
+            if a['source_entity_id'] in event['source_entity_ids'] or any(owner in event['source_entity_ids'] for owner in a['possible_owners'])]
+        event['ownership_conflicts'] += ['split:'+a['parent_id'] for a in actions if a['status']=='ambiguous'
+                                        and a['parent_id'] in event['source_parent_ids']]
+        if event['ownership_conflicts']:event['ownership_status']='ambiguous_preserved_existing'
+    return dict(event_proposals=finals,split_actions=actions,ambiguous_ownership=ambiguity,
+        source_to_final=source_to_final,retired_parent_groups=sorted(retired),
+        unresolved_retired_fragments=[dict(parent_candidate_id=m['event_id'],source_group=anchor,
+            original_measurement=deepcopy(m),status='unassigned_original_fragment',
+            reason='Container split; partial fragment has no independently complete identity')
+            for anchor in sorted(retired) for k in base_clusters[anchor] for m in entities[k]['original_measurements']
+            if m['event_id'] not in split_parents],
+        source_evidence=deepcopy(entities),
+        pairwise_evidence=[dict(source_a=x,source_b=y,**value) for (x,y),value in sorted(relations.items())
+                           if value['relation'] not in ('unrelated','distinct')],
+        matching_rules=dict(native_sample_dt_s=dt,measurement_span_s=measurement_span_s,
+            timing_tolerance_s=measurement_span_s+dt,minimum_shared_adjacent_sections=3,
+            priority=['exact ordered phase nodes','complete phase and arrival structure','unique partial phase ownership'],
+            no_transitive_bridge=True),event_count=None,event_frequency=None)
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/global_event_ownership.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/normalized_activity.py | git_blob_sha=1e051554c5ff57fb2a2493a9240aba8a036cec51 ================
+"""Wang-inspired pointwise relative salience on unchanged radial maps.
+
+The paper's magnitude is |curvature change|; here it is |filtered radial A|.
+Min/max are fixed over the complete video and BOTH walls, not each candidate
+or column. The paper does not specify this pooling scope. Cutoff=.6 and three
+adjacent native supports reuse the published cutoff and current fit support.
+"""
+import numpy as np
+
+
+def normalize_magnitude(filtered, valid):
+    y = np.asarray(filtered, float); m = np.asarray(valid, bool)
+    if y.shape != m.shape or y.ndim != 3 or y.shape[1] != 2:
+        raise ValueError('Expected time x two walls x native sections with valid mask')
+    supported = m & np.isfinite(y)
+    magnitude = abs(y[supported]); normalized = np.full_like(y, np.nan)
+    if not len(magnitude):
+        return normalized, dict(status='no_filtered_support',minimum=None,maximum=None,
+            physical_cutoff=None,cutoff=.6,normalization_scope='whole_video_both_walls')
+    low = float(magnitude.min()); high = float(magnitude.max())
+    normalized[supported] = (magnitude-low)/(high-low) if high > low else 0.
+    return normalized, dict(status='normalized' if high>low else 'constant_magnitude',
+        minimum=low,maximum=high,physical_cutoff=low+.6*(high-low),cutoff=.6,
+        normalization_scope='whole_video_both_walls',valid_filtered_samples=int(supported.sum()),
+        salient_samples=int((normalized[supported]>.6).sum()))
+
+
+def score_salience(event, source_evidence, normalized, valid, time_s):
+    entity = source_evidence[event['canonical_source_entity_id']]
+    t = np.asarray(time_s, float); y = np.asarray(normalized, float); m = np.asarray(valid, bool)
+    if y.shape != m.shape or y.ndim != 2 or y.shape[0] != len(t):
+        raise ValueError('Expected one native wall with matching time and validity')
+    ids = sorted(int(c) for c in entity['profile']); supported=[]; per_section=[]
+    for col in ids:
+        phases = entity['profile'].get(str(col),entity['profile'].get(col))
+        lo = min(p['start_s'] for p in phases); hi = max(p['end_s'] for p in phases)
+        a = int(np.searchsorted(t,lo-1e-8)); b = int(np.searchsorted(t,hi+1e-8,side='right'))
+        good = b>a and m[a:b,col].all() and np.isfinite(y[a:b,col]).all()
+        peak = float(y[a:b,col].max()) if good else None
+        samples = int((y[a:b,col]>.6).sum()) if good else 0
+        if good and peak>.6:supported.append(col)
+        per_section.append(dict(section=col,normalized_peak=peak,salient_samples=samples,
+                                phase_support_complete=bool(good)))
+    blocks = [b.tolist() for b in np.split(np.asarray(supported,int),
+              np.flatnonzero(np.diff(supported)!=1)+1) if len(b)>=3]
+    retained = sorted(c for block in blocks for c in block)
+    return dict(event_proposal_id=event['event_proposal_id'],
+        canonical_source=event['canonical_source_entity_id'],cutoff=.6,
+        decision='salient_support' if retained else 'insufficient_salient_support',
+        original_sections=ids,salient_sections=supported,retained_sections=retained,
+        native_contiguous_blocks=blocks,per_section=per_section,
+        direction=event['direction'],direction_source='unchanged_original_proposal_not_refit_on_subset',
+        ownership_status=event['ownership_status'],event_count=None,event_frequency=None)
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/normalized_activity.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/partial_phase_events.py | git_blob_sha=96355a97539334ea77eca2da7c443ca99dce43a0 ================
+"""Sandbox: retain observable boundary peaks and propose fragment ownership.
+
+Default detector and formal event interfaces are unchanged. Proposed groups
+are not reviewed waves, and their number is not physiological frequency.
+"""
+from copy import deepcopy
+from unittest.mock import patch
+import numpy as np
+from uterine_wave import radial_events as baseline
+
+
+def observed_lobes(y, valid, t, threshold):
+    filtered = np.full_like(y, np.nan)
+    columns = [[] for _ in range(y.shape[1])]
+    unresolved = []
+    minimum = max(3, int(np.ceil(12/np.median(np.diff(t)))))
+    for col in range(y.shape[1]):
+        for run_id, (begin, end) in enumerate(baseline._runs(valid[:, col])):
+            if end-begin < minimum:
+                continue
+            signal = baseline.band_limited_signal(y[begin:end, col], t[begin:end])
+            filtered[begin:end, col] = signal
+            edges = np.r_[0, np.flatnonzero(np.diff(signal >= 0))+1, len(signal)]
+            for sequence, (a, b) in enumerate(zip(edges[:-1], edges[1:])):
+                peak = int(a+np.argmax(abs(signal[a:b])))
+                amplitude = float(abs(signal[peak]))
+                left, right = bool(a == 0), bool(b == len(signal))
+                if amplitude <= max(float(threshold[col]), 1e-12):
+                    continue
+                if (left or right) and peak in (a, b-1):
+                    unresolved.append(dict(column=col, run_id=run_id,
+                        observed_start_s=float(t[begin+a]), observed_end_s=float(t[begin+b-1]),
+                        peak_observed=False, left_censored=left, right_censored=right))
+                    continue
+                columns[col].append(dict(column=col, run_id=run_id, sequence=sequence,
+                    sign=1 if signal[peak] > 0 else -1, peak_index=int(begin+peak),
+                    peak_time_s=float(t[begin+peak]), amplitude=amplitude,
+                    first=int(begin+a), last=int(begin+b-1),
+                    start_s=float(t[begin+a]), end_s=float(t[begin+b-1]),
+                    left_censored=left, right_censored=right, peak_observed=True))
+    return filtered, columns, unresolved
+
+
+def propose_groups(report):
+    """Unique disjoint complementary ownership proposals, no automatic review.
+
+    Only a whole single-phase candidate can attach, never silently assign a
+    subset and lose its remaining support. Opposite temporal roles, ambiguous
+    destinations and overlapping local phase nodes remain separate evidence.
+    """
+    events = report['events']
+    paired = [e for e in events if e['evidence_kind'] == 'paired_phase']
+    mapping = {e['event_id']:e['event_id'] for e in events}
+    attachments, unresolved = {}, []
+    used_sections = {e['event_id']:set(e['sections']) for e in paired}
+    for event in events:
+        if event['evidence_kind'] != 'single_phase':
+            continue
+        ridge = event['phase_ridge_ids'][0]
+        choices = []
+        for edge in report['alternative_phase_pairs']:
+            if edge['selected'] or ridge not in edge['phase_ridge_ids']:
+                continue
+            if edge['sections'] != event['sections']:
+                continue
+            other = next(k for k in edge['phase_ridge_ids'] if k != ridge)
+            for parent in paired:
+                if (other in parent['phase_ridge_ids'] and
+                    not set(edge['sections'])&set(parent['sections']) and
+                    edge['leading_polarity'] == parent['leading_polarity'] and
+                    edge['classification'] == parent['classification'] == event['classification'] and
+                    event['classification'] in ('C2F', 'F2C')):
+                    choices.append((parent, edge))
+        if len(choices) != 1:
+            if choices:
+                unresolved.append(dict(candidate_id=event['event_id'], reason='multiple_possible_parent_events',
+                                       possible_parents=[p['event_id'] for p, _ in choices]))
+            continue
+        parent, edge = choices[0]
+        if set(edge['sections'])&used_sections[parent['event_id']]:
+            unresolved.append(dict(candidate_id=event['event_id'], reason='competing_spatial_ownership'))
+            continue
+        used_sections[parent['event_id']].update(edge['sections'])
+        mapping[event['event_id']] = parent['event_id']
+        attachments[event['event_id']] = deepcopy(edge)
+    groups = {}
+    for event in events:
+        groups.setdefault(mapping[event['event_id']], []).append(event['event_id'])
+    return groups, attachments, unresolved
+
+
+def detect_partial(signal, valid, time_s, space, *, noise_floor):
+    original_ridges = baseline._ridges
+    captured, unresolved_peaks, boundary_nodes = {}, [], []
+    def lobes(y, supported, t, floor):
+        filtered, columns, unresolved = observed_lobes(y, supported, t, floor)
+        unresolved_peaks.extend(unresolved)
+        boundary_nodes.extend(n for column in columns for n in column
+                              if n['left_censored'] or n['right_censored'])
+        return filtered, columns
+    def ridges(columns, t, s):
+        result = original_ridges(columns, t, s)
+        captured.update({r['id']:r for r in result})
+        return result
+    with patch.object(baseline, '_lobes', lobes), patch.object(baseline, '_ridges', ridges):
+        report = baseline.detect_radial_events(signal, valid, time_s, space, noise_floor=noise_floor)
+    groups, attachments, unresolved = propose_groups(report)
+    fragments = []
+    for event in report['events']:
+        piece = attachments.get(event['event_id'], event)
+        nodes = []
+        for rid in piece['phase_ridge_ids']:
+            nodes.extend(n for n in captured[rid]['nodes'] if n['column'] in piece['sections'])
+        leading = piece['phase_ridge_ids'][0]
+        trailing = piece['phase_ridge_ids'][-1]
+        # _measure_pair writes phase IDs in temporal order; singles have one.
+        left = any(n['left_censored'] for n in captured[leading]['nodes'] if n['column'] in piece['sections'])
+        right = any(n['right_censored'] for n in captured[trailing]['nodes'] if n['column'] in piece['sections'])
+        fragments.append(dict(fragment_id=event['event_id'], source_candidate_id=event['event_id'],
+            observed_start_s=piece['start_s'], observed_end_s=piece['end_s'],
+            structure_start_s=None if left else piece['start_s'],
+            structure_end_s=None if right else piece['end_s'],
+            boundary_status=dict(start_unknown=left, end_unknown=right),
+            sections=piece['sections'], arrival_time_s=piece['arrival_time_s'],
+            arrival_marker=piece['arrival_marker'], direction=piece['classification'],
+            phase_ridge_ids=piece['phase_ridge_ids'],
+            local_phase_support=[dict(section=n['column'], run_id=n['run_id'], sign=n['sign'],
+                observed_start_s=n['start_s'], observed_end_s=n['end_s'], peak_s=n['peak_time_s'],
+                start_unknown=n['left_censored'], end_unknown=n['right_censored']) for n in nodes],
+            time_bounds_semantics='Observed filtered-phase structure, not complete physiological contraction duration',
+            relation='complementary_spatial_piece_proposal' if event['event_id'] in attachments else 'original_candidate',
+            reviewed=False))
+    report.update(candidate_algorithm='experimental_observable_partial_phase_v1',
+        fragments=fragments,
+        proposed_events=[dict(proposal_id=key, fragment_ids=ids, identity_reviewed=False)
+                         for key, ids in groups.items()],
+        ownership_ambiguities=unresolved,
+        unresolved_boundary_segments=unresolved_peaks,
+        observed_boundary_nodes=[dict(column=n['column'], run_id=n['run_id'],
+            peak_time_s=n['peak_time_s'], observed_start_s=n['start_s'], observed_end_s=n['end_s'],
+            left_censored=n['left_censored'], right_censored=n['right_censored'])
+            for n in boundary_nodes],
+        provisional_direction_groups=sum(any(report_event['classification'] in ('C2F', 'F2C')
+            for report_event in report['events'] if report_event['event_id'] in ids) for ids in groups.values()),
+        formal_patient_output=dict(event_count=None, event_frequency_cpm=None,
+                                   status='identity_and_detection_not_validated'))
+    return report
+
+
+def anchor_to_existing_candidates(original, observed):
+    """Use retained boundary evidence to repair existing proposals only.
+
+    All original candidates remain traceable. Novel/unmatched boundary paths
+    remain additional support, never automatically new independent events.
+    Exact phase-node identity is used; no numerical match threshold is tuned.
+    """
+    def tokens(report, event):
+        ridges = {r['ridge_id']:r for r in report['phase_ridges']}
+        return {(ridges[k]['sign'], col, time) for k in event['phase_ridge_ids']
+                for col, time in zip(ridges[k]['sections'], ridges[k]['peak_time_s'])
+                if col in event['sections']}
+    observed_by_id = {e['event_id']:e for e in observed['events']}
+    pieces_by_id = {p['fragment_id']:p for p in observed['fragments']}
+    group_tokens = {}
+    for group in observed['proposed_events']:
+        combined = set()
+        for fragment_id in group['fragment_ids']:
+            source = observed_by_id[fragment_id]
+            piece = pieces_by_id[fragment_id]
+            combined.update(tokens(observed, dict(source, sections=piece['sections'],
+                                                   phase_ridge_ids=piece['phase_ridge_ids'])))
+        group_tokens[group['proposal_id']] = combined
+    destinations, ambiguity = {}, []
+    for event in original['events']:
+        signature = tokens(original, event)
+        choices = [key for key, support in group_tokens.items() if signature <= support]
+        if len(choices) == 1:
+            destinations[event['event_id']] = choices[0]
+        else:
+            destinations[event['event_id']] = None
+            ambiguity.append(dict(candidate_id=event['event_id'], reason='no_unique_complete_phase_support',
+                                  possible_groups=choices))
+    conflicting = set()
+    for key in group_tokens:
+        directions = {event['classification'] for event in original['events']
+                      if destinations[event['event_id']] == key
+                      and event['classification'] in ('C2F', 'F2C')}
+        if len(directions) > 1:
+            conflicting.add(key)
+            ambiguity.append(dict(observed_group=key, reason='opposing_original_directions'))
+    groups = {}
+    for event in original['events']:
+        destination = destinations[event['event_id']]
+        key = ('observed', destination) if destination is not None and destination not in conflicting else ('original', event['event_id'])
+        groups.setdefault(key, []).append(event)
+    output = []
+    used_observed = set()
+    observed_groups = {g['proposal_id']:g for g in observed['proposed_events']}
+    for number, (key, events) in enumerate(groups.items(), 1):
+        if key[0] == 'observed':
+            used_observed.add(key[1])
+        output.append(dict(proposal_id=f'activity_proposal_{number:03d}',
+            source_candidate_ids=[e['event_id'] for e in events],
+            observed_fragment_ids=observed_groups[key[1]]['fragment_ids'] if key[0] == 'observed' else [],
+            observed_support_group=key[1] if key[0] == 'observed' else None,
+            direction_candidate=any(e['classification'] in ('C2F', 'F2C') for e in events),
+            ownership_status='proposed_shared_identity' if len(events) > 1 else 'single_existing_candidate',
+            identity_reviewed=False))
+    return dict(existing_candidate_groups=output,
+        additional_support_groups=[g for g in observed['proposed_events'] if g['proposal_id'] not in used_observed],
+        mapping_ambiguities=ambiguity,
+        existing_direction_group_proposals=sum(g['direction_candidate'] for g in output),
+        formal_event_count=None, formal_event_frequency_cpm=None,
+        interpretation='Support-assisted ownership proposals only; no new independent waves or reviewed identities')
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/partial_phase_events.py ================
