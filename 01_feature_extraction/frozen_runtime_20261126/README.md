@@ -31,7 +31,7 @@ m1-global-pairing-unseen-v1
 Engineering revision:
 
 ```text
-20261126_gemini_audit_fix1
+20261126_gemini_audit_fix3
 ```
 
 This revision changes orchestration safeguards only; the locked measurement
@@ -100,5 +100,8 @@ Measurement failure remains missing. Zero is not used as a generic failure value
 - case_id is preserved as a string across R2 CSV stages;
 - relative manifest paths are resolved against the manifest directory;
 - invalid/failed R2 cases are isolated and remain NaN with status/reason;
+- merged R2 tables skip failed cases instead of indexing missing outputs;
 - successful R2 cases continue and still produce FINAL_DYNAMIC_FEATURES.csv;
+- temporary R2 cache files use a non-.npz suffix and cannot be discovered as completed caches;
+- downstream longitudinal scripts preserve exam_id/patient_id as strings when re-reading master_long.csv;
 - source hashes use canonical LF text hashing; .gitattributes also enforces LF.
