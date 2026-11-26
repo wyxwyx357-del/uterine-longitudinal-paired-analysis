@@ -89,13 +89,15 @@ def main() -> int:
     if not args.input.is_file():
         raise FileNotFoundError(args.input)
 
-    source = pd.read_csv(args.input, dtype={"case_id": str})
-    source["case_id"] = source["case_id"].astype(str).str.strip()
-    if "case_id" not in source.columns:
+    header = pd.read_csv(args.input, nrows=0)
+    if "case_id" not in header.columns:
         raise ValueError("Frozen table must contain case_id")
+
+    source = pd.read_csv(args.input, dtype={"case_id": str})
     if source["case_id"].isna().any():
         raise ValueError("case_id contains missing values")
-    if source["case_id"].astype(str).str.strip().eq("").any():
+    source["case_id"] = source["case_id"].astype(str).str.strip()
+    if source["case_id"].eq("").any():
         raise ValueError("case_id contains blank values")
     if source["case_id"].duplicated().any():
         raise ValueError("case_id must be unique in FINAL_DYNAMIC_FEATURES.csv")
