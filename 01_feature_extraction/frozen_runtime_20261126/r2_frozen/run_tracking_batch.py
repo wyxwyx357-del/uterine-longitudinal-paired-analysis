@@ -103,10 +103,10 @@ def main() -> int:
                     break
             merged_complete = all((merged_dir / table).is_file() for table in NATIVE_TABLES)
             if (
-                previous.get("state") == "complete"
+                previous.get("state") in {"complete", "partial_complete"}
                 and same_cases and same_manifest_rows and merged_complete
             ):
-                print(f"already complete: {merged_dir}", flush=True)
+                print(f"already complete or partial-complete: {merged_dir}", flush=True)
                 return 0
         raise FileExistsError(f"Existing merged directory is incomplete or mismatched: {merged_dir}")
     lock = threading.Lock()
@@ -199,12 +199,36 @@ def main() -> int:
                 status["remaining_cases"] = len(manifest_rows) - len(outputs)
                 atomic_status(status_path, status)
 
-    if len(outputs) != len(manifest_rows):
-        status.update(state="incomplete", finished_at=datetime.now().astimezone().isoformat())
+    failed_case_ids = [
+        case_id for case_id, record in records.items()
+        if record.get("state") != "complete"
+    ]
+    if not outputs:
+        status.update(
+            state="failed",
+            finished_at=datetime.now().astimezone().isoformat(),
+            failed_cases=len(failed_case_ids),
+            remaining_cases=0,
+        )
         atomic_status(status_path, status)
         return 2
 
     merged_dir.mkdir()
+    failed_rows = [
+        {
+            "case_id": case_id,
+            "state": records[case_id].get("state"),
+            "return_code": records[case_id].get("return_code"),
+            "output": records[case_id].get("output"),
+        }
+        for case_id in failed_case_ids
+    ]
+    write_csv(
+        merged_dir / "failed_cases.csv",
+        ["case_id", "state", "return_code", "output"],
+        failed_rows,
+    )
+
     for table in NATIVE_TABLES:
         fields: list[str] = []
         combined: list[dict[str, str]] = []
@@ -225,7 +249,9 @@ def main() -> int:
     cohort_summary = {
         "frozen_rule_version": "R2_TISSUE_FREQUENCY_V1_20261105",
         "clinical_outcome_read": False,
-        "patients": len(manifest_rows),
+        "requested_patients": len(manifest_rows),
+        "patients": len(outputs),
+        "failed_patients": len(failed_case_ids),
         "regions": len(region_rows),
         "technical_confidence_counts": confidence_counts,
         "retained_regions": sum(
@@ -245,10 +271,13 @@ def main() -> int:
         merged_dir / "optimized_patient_frequency.csv")
     write_csv(merged_dir / "患者级技术汇总.csv", patient_fields, patient_rows)
     status.update(
-        state="complete",
+        state="complete" if not failed_case_ids else "partial_complete",
         finished_at=datetime.now().astimezone().isoformat(),
         merged_results=str(merged_dir),
         summary_return_code=0,
+        completed_cases=len(outputs),
+        failed_cases=len(failed_case_ids),
+        remaining_cases=0,
         frozen_rule_version="R2_TISSUE_FREQUENCY_V1_20261105",
     )
     atomic_status(status_path, status)
