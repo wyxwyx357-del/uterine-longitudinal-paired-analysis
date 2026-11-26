@@ -3,18 +3,27 @@
   "outcomes_read": false,
   "pose_reset": false,
   "nnunet_recovery": false,
-  "a0_interval_s": 2.0,
-  "mse_s_range": [0.2, 0.8],
-  "mse_window_s": 20.0,
-  "mse_step_s": 1.0,
+  "a0_interval_s": 2,
+  "mse_s_range": [
+    0.2,
+    0.8
+  ],
+  "mse_window_s": 20,
+  "mse_step_s": 1,
   "m1_algorithm": "m1-global-pairing-unseen-v1",
   "m1_noise_floor_s_inv": 0.0007509593468916695,
-  "m1_min_continuous_run_s": 12.0,
+  "m1_min_continuous_run_s": 12,
   "m1_min_adjacent_native_sections": 3,
   "m1_salience_cutoff": 0.6,
   "m1_main_scalar": "m1_prop_rate_min_per_min",
   "r2_version": "R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106",
   "r2_wall": "posterior",
   "r2_patient_aggregation": "equal mean over retained posterior cervical/middle/fundal regions",
-  "missing_policy": "leave blank/NaN; never replace with zero"
+  "missing_policy": "leave blank/NaN; never replace with zero",
+  "engineering_revision": "20261126_gemini_audit_fix1",
+  "algorithm_definition_unchanged": true,
+  "case_id_policy": "preserve as string from manifest through all R2/longitudinal joins",
+  "manifest_path_policy": "relative paths resolved against the manifest directory before processing",
+  "r2_case_failure_policy": "isolate failed or invalid R2 cases; retain final row with NaN and status/failure reason; do not abort successful cases",
+  "source_hash_policy": "canonical LF text hashing plus repository .gitattributes eol=lf"
 }
