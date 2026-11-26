@@ -1,5 +1,21 @@
 # Tracking
 
-用于迁移现有冻结 A0/P3 追踪代码，包括 LK、双向QC、背景刚体校正、轨迹有效性与无效段处理。
+追踪源码已迁入。
 
-**当前：源码尚未迁入。迁移时应复制/整理已有冻结实现，不在此处重写算法定义。**
+正式运行使用：
+
+```text
+../frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/
+```
+
+其中包含 `_lk.py`、`geometry.py`、`tracking.py`、`deformation.py` 等。
+
+历史审计快照保留在：
+
+```text
+../a0_wave_pipeline/uterine_wave/
+```
+
+A0 正式链保持原冻结逻辑：追踪、pose/刚体校正、连续有效段、约 2 s 径向测量；不跨无效段拼接。
+
+本次迁移没有重新定义追踪阈值，也没有新增 outcome-driven QC。
