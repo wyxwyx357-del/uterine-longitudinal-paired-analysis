@@ -5571,3 +5571,956 @@ def radial_candidates_from_maps(spacetime, *, noise_floor, s_range=(0.,1.), conf
                 interval_center_s=t.copy(),s=s.copy())
     return report,arrays
 ================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/radial_events.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/spectrum.py | git_blob_sha=2517fe0c5b74f09856c0747e3cf16a59535be049 ================
+"""Directional spectra; raw FFT power is QC, not cross-grid physical energy."""
+import numpy as np
+
+
+def _spectrum(y, time_s, space, band_cpm=(.5, 5.)):
+    """ER>0 means cervix-to-fundus; space must increase anatomically C to F.
+
+    No temporal filling or spatial filling. This diagnostic operates on a
+    complete contiguous block. The numerical energy floor is not a noise gate.
+    """
+    y, t, space = np.asarray(y, float), np.asarray(time_s, float), np.asarray(space, float)
+    if y.shape != (len(t), len(space)) or len(t) < 3 or len(space) < 3 or not np.isfinite(y).all():
+        raise ValueError("Expected a finite time x space map with at least 3 samples per axis")
+    if not np.isfinite(t).all() or not np.isfinite(space).all() or np.any(np.diff(space) <= 0):
+        raise ValueError("Coordinates must be finite and ordered")
+    dt = np.diff(t)
+    if np.any(dt <= 0) or not np.allclose(dt, np.median(dt), rtol=1e-5, atol=1e-9):
+        raise ValueError("FFT requires uniform real timestamps; do not fill missing frames")
+    if not 0 < band_cpm[0] < band_cpm[1]:
+        raise ValueError("Invalid temporal frequency band")
+    ft = np.fft.fftfreq(len(t), np.median(dt))
+    g = np.diff(space)
+    weights = np.r_[g[0], (g[:-1]+g[1:])/2, g[-1]]
+    weights /= weights.mean()
+    fx = np.fft.fftfreq(len(space), d=(space[-1]-space[0])/(len(space)-1))
+    transformed = np.fft.fft(y-y.mean(0), axis=0)*weights
+    spatial = np.exp(-2j*np.pi*(space-space[0])[:, None]*fx[None, :])
+    power = np.abs(transformed @ spatial)**2
+    band = (np.abs(ft) >= band_cpm[0]/60) & (np.abs(ft) <= band_cpm[1]/60)
+    return y, t, space, ft, fx, power, band
+
+
+def _direction_summary(y, t, space, ft, fx, power, band, band_cpm):
+    dt = np.diff(t)
+    ef = float(power[band[:, None] & (ft[:, None]*fx[None, :] < 0)].sum())
+    eb = float(power[band[:, None] & (ft[:, None]*fx[None, :] > 0)].sum())
+    total = float(power.sum())
+    band_energy = float(power[band].sum())
+    directional_energy = ef+eb
+    er = (ef-eb)/(ef+eb) if ef+eb > max(1e-25, total*1e-12) else None
+    return dict(ER=er, forward_energy=ef, backward_energy=eb,
+                directional_energy=directional_energy,
+                spectral_energy_normalization='unnormalized_fft_power',
+                spectral_energy_role='QC_only',
+                spectral_energy_cross_grid_comparable=False,
+                directional_rms=float(np.sqrt(directional_energy)/(len(t)*len(space))),
+                directional_band_energy_fraction=(directional_energy/band_energy if band_energy > 1e-25 else None),
+                time_resolution_cpm=60/(len(t)*np.median(dt)),
+                duration_s=float(t[-1]-t[0]), spatial_columns=len(space),
+                band_cpm=list(band_cpm), event_detected=None)
+
+
+def direction(y, time_s, space, band_cpm=(.5, 5.)):
+    """Unchanged ER convention: positive C2F; this does not detect events."""
+    return _direction_summary(*_spectrum(y, time_s, space, band_cpm), band_cpm)
+
+
+def mode_velocity(y, time_s, space, band_cpm=(.5, 5.), *, refine=False):
+    """Directional spectral peak speed, not individual-wave arrival speed.
+
+    v=-ft/fs for the Fourier convention used here. When space is the original
+    full-wall normalized arc, units are full-wall paths per second. Both
+    directions are retained, including standing/balanced activity. No new
+    physiological activity threshold or smoothing. The coarse grid peak is
+    archived when refine=True requests the continuous candidate. The default
+    preserves the baseline pending real-video validation of the candidate.
+    """
+    arrays = _spectrum(y, time_s, space, band_cpm)
+    y, t, space, ft, fx, power, band = arrays
+    result = _direction_summary(*arrays, band_cpm)
+    result['space_frequency_resolution'] = float(abs(fx[1]))
+    result['positive_temporal_band_bins'] = int((band & (ft > 0)).sum())
+    floor = max(1e-25, float(power.sum())*1e-12)
+    for name, sign in [('C2F', -1), ('F2C', 1)]:
+        mask = band[:, None] & (ft[:, None] > 0) & (ft[:, None]*fx[None, :]*sign > 0)
+        energy = float(power[mask].sum())
+        if not mask.any() or energy <= floor:
+            result[name] = dict(status='no_resolved_directional_energy', velocity=None)
+            continue
+        peak = np.where(mask, power, -np.inf)
+        i, j = np.unravel_index(np.argmax(peak), peak.shape)
+        result[name] = dict(status='spectral_mode_candidate', velocity=float(-ft[i]/fx[j]),
+            temporal_frequency_hz=float(ft[i]), spatial_frequency=float(fx[j]),
+            peak_energy_fraction=float(power[i, j]/energy), directional_energy=energy,
+            available_spectral_cells=int(mask.sum()),
+            lowest_nonzero_spatial_peak=bool(np.isclose(abs(fx[j]),abs(fx[1]))),
+            spatial_nyquist_peak=bool(len(fx)%2 == 0 and j == len(fx)//2))
+    if refine:
+        from .wavefit import fit_wave_modes
+        fit = fit_wave_modes(y, t, space, band_cpm)
+        result['velocity_fit'] = {key: value for key, value in fit.items() if key != 'components'}
+        for name in ('C2F', 'F2C'):
+            coarse = result[name]
+            component = fit['components'][name]
+            result[name] = dict(coarse, grid_peak=coarse.copy())
+            result[name].update(component)
+            result[name]['velocity_method'] = 'continuous_two_direction_fit'
+    return result
+
+
+def describe(measured, reference, valid, time_s, arc):
+    """Matched-support error; direction uses the longest complete spatial run."""
+    measured, reference, valid = np.asarray(measured), np.asarray(reference), np.asarray(valid, bool)
+    valid = valid & np.isfinite(measured) & np.isfinite(reference)
+    a, b = measured[valid], reference[valid]
+    baseline = float(np.sqrt(np.mean(b*b))) if len(b) else None
+    row = dict(valid_fraction=float(valid.mean()),
+               rmse=float(np.sqrt(np.mean((a-b)**2))) if len(a) else None,
+               reference_rms=baseline, measured_rms=float(np.sqrt(np.mean(a*a))) if len(a) else None)
+    if baseline is not None and baseline > 1e-10:
+        row.update(normalized_rmse=row['rmse']/baseline, rms_ratio=row['measured_rms']/baseline,
+                   correlation=float(np.corrcoef(a, b)[0, 1]) if np.std(a) > 1e-20 and np.std(b) > 1e-20 else None)
+    complete = valid.all(0)
+    bounds = np.flatnonzero(np.diff(np.r_[False, complete, False])).reshape(-1, 2)
+    choices = [(int(u), int(v)) for u, v in bounds if v-u >= 3]
+    if choices:
+        u, v = max(choices, key=lambda p: arc[p[1]-1]-arc[p[0]])
+        row.update(direction_columns=[u, v],
+                   measured_ER=direction(measured[:, u:v], time_s, arc[u:v])['ER'],
+                   reference_ER=direction(reference[:, u:v], time_s, arc[u:v])['ER'])
+    return row
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/spectrum.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/tracking.py | git_blob_sha=1e6fd1ac3592b8eb855a547deafb53301e208a84 ================
+"""Tracklets with last-reference re-localization and one-frame confirmation.
+
+target_valid describes supported positions. step_valid additionally excludes
+every re-anchor transition. Features must consume step_valid + segment_id.
+"""
+import numpy as np
+import cv2
+from ._lk import match, local_contrast
+
+def track_segments(gray,initial,time_s,poses,*,recover=True,retry_frames=4,
+                   window=21,max_fb_px=.75,contrast_sigma=5.,qc_downsample=1,qc_window=None,pose_epoch=None,pose_valid=None):
+    t=np.asarray(time_s,float);ini=np.asarray(initial,np.float32);poses=np.asarray(poses,float)
+    if t.ndim!=1 or len(t)<2 or not np.isfinite(t).all():raise ValueError('Expected at least two finite timestamps')
+    if ini.ndim!=2 or ini.shape[1]!=2 or len(ini)==0 or not np.isfinite(ini).all():raise ValueError('Expected finite nonempty Nx2 seeds')
+    if not np.isfinite(poses).all():raise ValueError('Poses must be finite')
+    if poses.shape!=(len(t),3,3) or not np.allclose(poses[:,2],[0,0,1]) or np.any(np.abs(np.linalg.det(poses))<1e-12):raise ValueError('Expected invertible affine image-to-reference poses')
+    if len(gray)!=len(t) or poses.shape!=(len(t),3,3) or np.any(np.diff(t)<=0):raise ValueError('Frame/time/pose mismatch')
+    if gray[0].ndim!=2 or gray[0].dtype!=np.uint8:raise ValueError('Expected uint8 grayscale frames')
+    epoch=np.zeros(len(t),int) if pose_epoch is None else np.asarray(pose_epoch)
+    if epoch.shape!=t.shape:raise ValueError('pose_epoch must match timestamps')
+    pose_valid=None if pose_valid is None else np.asarray(pose_valid,bool)
+    if pose_valid is not None and pose_valid.shape!=t.shape:raise ValueError('pose_valid must match timestamps')
+    if retry_frames<1:raise ValueError('retry_frames must be positive')
+    if window<7 or window%2!=1 or max_fb_px<=0 or contrast_sigma<=0:raise ValueError('Invalid tracking scale')
+    if not isinstance(qc_downsample,int) or qc_downsample<1:raise ValueError('QC downsample must be a positive integer')
+    if qc_window is not None and (qc_window<3 or qc_window%2!=1):raise ValueError('QC window must be odd and at least 3')
+    qc=gray if qc_downsample==1 else [cv2.resize(frame,None,fx=1/qc_downsample,fy=1/qc_downsample,interpolation=cv2.INTER_AREA) for frame in gray]
+    n,k=len(t),len(ini)
+    p=np.full((n,k,2),np.nan,np.float32);v=np.zeros((n,k),bool);step=np.zeros((n,k),bool)
+    segment=np.full((n,k),-1,int);reanchor=np.zeros((n,k),bool);attempt=np.zeros((n,k),bool)
+    score=np.full((n,k),np.nan);fb=np.full_like(score,np.nan);reason=np.full((n,k),'waiting',dtype='U28')
+    p[0]=ini;v[0]=True;segment[0]=0;reason[0]='seed'
+    last_index=np.zeros(k,int);last_point=ini.copy();next_retry=np.zeros(k,int);sid=np.zeros(k,int)
+    pending_index=np.full(k,-1,int);pending_point=np.full((k,2),np.nan,np.float32)
+    enhanced=[local_contrast(gray[0],sigma=contrast_sigma)]
+    for i in range(1,n):
+        if gray[i].shape!=gray[0].shape or gray[i].dtype!=np.uint8:raise ValueError('Frame geometry or dtype changed')
+        enhanced.append(local_contrast(gray[i],sigma=contrast_sigma))
+        # A pending seed is committed only after a successful native-frame step.
+        pending=np.flatnonzero(pending_index==i-1)
+        if len(pending):
+            q,g,s,f,r=match(enhanced[i-1],enhanced[i],qc[i-1],qc[i],pending_point[pending],window,max_fb_px=max_fb_px,qc_scale=qc_downsample,qc_window=qc_window)
+            for j,col in enumerate(pending):
+                score[i,col]=s[j];fb[i,col]=f[j]
+                if g[j]:
+                    seed=int(pending_index[col]);sid[col]+=1
+                    p[seed,col]=pending_point[col];v[seed,col]=True;segment[seed,col]=sid[col];reanchor[seed,col]=True
+                    reason[seed,col]='reanchor_confirmed';step[seed,col]=False
+                    p[i,col]=q[j];v[i,col]=True;segment[i,col]=sid[col];step[i,col]=True;reason[i,col]='accepted_after_reanchor'
+                    last_index[col]=i;last_point[col]=q[j]
+                else:reason[i,col]='confirmation_failed'
+                pending_index[col]=-1
+        # Existing tracks keep the exact original localization/QC behavior.
+        active=np.flatnonzero(v[i-1]&~reanchor[i-1])
+        # Confirmed seeds were handled above, so do not process them twice.
+        active=np.setdiff1d(active,pending,assume_unique=True)
+        if len(active):
+            q,g,s,f,r=match(enhanced[i-1],enhanced[i],qc[i-1],qc[i],p[i-1,active],window,max_fb_px=max_fb_px,qc_scale=qc_downsample,qc_window=qc_window)
+            score[i,active]=s;fb[i,active]=f;reason[i,active]=r
+            keep=active[g];p[i,keep]=q[g];v[i,keep]=True;segment[i,keep]=sid[keep];step[i,keep]=True
+            last_index[keep]=i;last_point[keep]=q[g]
+            next_retry[active[~g]]=i+retry_frames
+        if recover:
+            waiting=np.flatnonzero(~v[i]&(pending_index<0)&(i>=next_retry))
+            for ref in np.unique(last_index[waiting]):
+                cols=waiting[last_index[waiting]==ref]
+                m=np.linalg.inv(poses[i])@poses[int(ref)]
+                if not np.isfinite(m).all():continue
+                guess=last_point[cols]@m[:2,:2].T+m[:2,2]
+                q,g,s,f,r=match(enhanced[int(ref)],enhanced[i],qc[int(ref)],qc[i],last_point[cols],window,guess,max_fb_px=max_fb_px,qc_scale=qc_downsample,qc_window=qc_window)
+                attempt[i,cols]=True;next_retry[cols]=i+retry_frames
+                for j,col in enumerate(cols):
+                    if g[j]:
+                        pending_index[col]=i;pending_point[col]=q[j]
+                        reason[i,col]='awaiting_confirmation';score[i,col]=s[j];fb[i,col]=f[j]
+    corrected=np.einsum('tni,tji->tnj',p.astype(float),poses[:,:2,:2])+poses[:,None,:2,2]
+    result=dict(positions=p,corrected=corrected,target_valid=v,step_valid=step,segment_id=segment,reanchor=reanchor,
+        recovery_attempted=attempt,time_s=t,frame_indices=np.arange(n),initial_points=ini,poses=poses,
+        target_ncc=score,target_fb=fb,reject_reason=reason,pose_epoch=epoch)
+    if pose_valid is not None:result['pose_valid']=pose_valid.copy()
+    return result
+
+
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/tracking.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/wavefit.py | git_blob_sha=60888d1088ce966e78fe32d6782a85fe7648312b ================
+"""Continuous travelling-plane fit for mode speed, without event counting.
+
+Two counterpropagating components are fitted jointly. Per-position offsets and
+linear trends are nuisance terms, projected out of both data and model. This
+refines the speed measurement; the original directional-energy ER is separate.
+"""
+import numpy as np
+
+
+def _minimize(objective, start, *, iterations=240):
+    """Bounded Nelder-Mead in unit coordinates; small 2/4-parameter problem."""
+    start = np.asarray(start, float)
+    simplex = np.tile(start, (len(start)+1, 1))
+    for j in range(len(start)):
+        simplex[j+1, j] += .06 if start[j] <= .94 else -.06
+    values = np.array([objective(p) for p in simplex])
+    for _ in range(iterations):
+        order = np.argsort(values)
+        simplex, values = simplex[order], values[order]
+        if np.max(np.abs(simplex[1:]-simplex[0])) < 1e-6:
+            break
+        center = simplex[:-1].mean(0)
+        reflected = np.clip(2*center-simplex[-1], 0, 1)
+        reflected_value = objective(reflected)
+        if reflected_value < values[0]:
+            expanded = np.clip(center+2*(reflected-center), 0, 1)
+            expanded_value = objective(expanded)
+            simplex[-1], values[-1] = ((expanded, expanded_value)
+                if expanded_value < reflected_value else (reflected, reflected_value))
+        elif reflected_value < values[-2]:
+            simplex[-1], values[-1] = reflected, reflected_value
+        else:
+            outside = reflected_value < values[-1]
+            contracted = np.clip(center+.5*((reflected if outside else simplex[-1])-center), 0, 1)
+            contracted_value = objective(contracted)
+            if contracted_value < (reflected_value if outside else values[-1]):
+                simplex[-1], values[-1] = contracted, contracted_value
+            else:
+                simplex[1:] = (simplex[1:]+simplex[0])/2
+                values[1:] = [objective(p) for p in simplex[1:]]
+    best = int(np.argmin(values))
+    converged = bool(np.max(np.abs(simplex-simplex[best])) < 1e-6)
+    return simplex[best], float(values[best]), converged
+
+
+def fit_wave_modes(y, time_s, space, band_cpm=(.5, 5.)):
+    """Measure signed mode speeds using actual coordinates, not FFT grid bins.
+
+    Inputs are already validated complete rectangular blocks by spectrum.py.
+    Fit quality and parameter boundaries are diagnostics, not biological gates.
+    A spatially uniform component has no resolved propagation speed. The only
+    energy cutoff is numerical; this routine never declares an event present.
+    """
+    y, time, space = np.asarray(y, float), np.asarray(time_s, float), np.asarray(space, float)
+    t = time-time.mean()
+    x = space-space.mean()
+    span = float(np.ptp(space))
+    trend = t/np.linalg.norm(t)
+    gaps = np.diff(space)
+    weights = np.r_[gaps[0], (gaps[:-1]+gaps[1:])/2, gaps[-1]]
+    weights = np.sqrt(weights/weights.mean())
+
+    def project(values):
+        values = values-values.mean(0)
+        return (values-trend[:, None]*(trend@values)[None, :])*weights
+
+    data = project(y).ravel()
+    energy = float(data@data)
+    floor = max(1e-25, float(np.sum((y-y.mean(0))**2))*1e-12)
+    if energy <= floor:
+        return dict(status='no_residual_motion_after_linear_trend', residual_fraction=None,
+                    components={name: dict(velocity=None, temporal_frequency_hz=None,
+                                           spatial_frequency=None, status='no_resolved_motion')
+                                for name in ('C2F', 'F2C')})
+    low, high = np.asarray(band_cpm)/60
+    nyquist = .5/np.mean(gaps)
+
+    def parameters(unit, sign):
+        return low+unit[0]*(high-low), sign*unit[1]*nyquist
+
+    def basis(unit, sign):
+        frequency, wavenumber = parameters(unit, sign)
+        phase = 2*np.pi*(frequency*t[:, None]+wavenumber*x[None, :])
+        return np.column_stack((project(np.cos(phase)).ravel(), project(np.sin(phase)).ravel()))
+
+    def solve(unit, signs, details=False):
+        matrix = np.column_stack([basis(unit[2*j:2*j+2], sign) for j, sign in enumerate(signs)])
+        coefficients = np.linalg.lstsq(matrix, data, rcond=np.sqrt(np.finfo(float).eps))[0]
+        residual = data-matrix@coefficients
+        loss = float(residual@residual/energy)
+        return (loss, matrix, coefficients) if details else loss
+
+    starts = []
+    for sign in (-1, 1):
+        objective = lambda unit: solve(unit, [sign])
+        candidates = [(objective([f, k]), [f, k])
+                      for f in np.linspace(0, 1, 7)
+                      for k in np.linspace(0, 1, 2*len(space)+1)]
+        initial = min(candidates, key=lambda item: item[0])[1]
+        fitted, _, _ = _minimize(objective, initial, iterations=160)
+        starts.extend(fitted)
+    fitted, _, converged = _minimize(lambda unit: solve(unit, [-1, 1]), starts)
+    loss, matrix, coefficients = solve(fitted, [-1, 1], details=True)
+    singular = np.linalg.svd(matrix, compute_uv=False)
+    separable = bool(singular[-1] > singular[0]*np.sqrt(np.finfo(float).eps))
+    components = {}
+    for j, (name, sign) in enumerate([('C2F', -1), ('F2C', 1)]):
+        unit = fitted[2*j:2*j+2]
+        frequency, wavenumber = parameters(unit, sign)
+        component = matrix[:, 2*j:2*j+2]@coefficients[2*j:2*j+2]
+        fraction = float(component@component/energy)
+        uniform = abs(wavenumber)*span <= 1e-5
+        present = fraction > 1e-10
+        components[name] = dict(
+            velocity=float(-frequency/wavenumber) if present and not uniform and separable else None,
+            temporal_frequency_hz=float(frequency), spatial_frequency=float(wavenumber),
+            component_energy_fraction=fraction if separable else None,
+            temporal_boundary=bool(unit[0] < 1e-4 or unit[0] > 1-1e-4),
+            spatial_boundary=bool(unit[1] < 1e-4 or unit[1] > 1-1e-4),
+            status=('unresolved_counterpropagating_components' if not separable else
+                    'no_resolved_component' if not present else
+                    'spatially_uniform_component' if uniform else 'continuous_mode_candidate'))
+    return dict(status='continuous_two_direction_fit', residual_fraction=loss,
+                optimizer_converged=converged,
+                component_condition_number=float(singular[0]/singular[-1]) if singular[-1] > 0 else None,
+                nuisance='per_position_offset_and_linear_trend', components=components)
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/wavefit.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/experiments/step2_salience_sandbox/__init__.py | git_blob_sha=560626bd0f5b54c6bf43b033c9c2de3a0f5fe0e5 ================
+"""Step 2 infrastructure only; no production replacement or selected thresholds."""
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/experiments/step2_salience_sandbox/__init__.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/experiments/step2_salience_sandbox/upstream.py | git_blob_sha=b553ce63f79aa9e35faa4cb27fcf60585409cf6b ================
+"""One extraction per input, shared by every salience branch."""
+import hashlib
+import json
+import numpy as np
+
+from analysis.mse_pregnancy_association.code.activity_strength import filtered_runs
+from analysis.mse_pregnancy_association.code.partial_phase_events import detect_partial
+from analysis.mse_pregnancy_association.code.candidate_split_verifier import prepare_parent, decide_split
+from analysis.mse_pregnancy_association.code.global_event_ownership import reconcile
+from analysis.mse_pregnancy_association.code.patient_activity_aggregation import observation_union
+
+
+def stable_hash(value):
+    def encode(x):
+        if isinstance(x, np.ndarray):
+            return dict(shape=x.shape, dtype=str(x.dtype), sha256=hashlib.sha256(x.tobytes()).hexdigest())
+        if isinstance(x, dict):
+            return {str(k):encode(v) for k,v in sorted(x.items(),key=lambda item:str(item[0]))}
+        if isinstance(x, (list,tuple)):
+            return [encode(v) for v in x]
+        if isinstance(x, np.generic):
+            return x.item()
+        return x
+    return hashlib.sha256(json.dumps(encode(value),sort_keys=True,allow_nan=True).encode()).hexdigest()
+
+
+def pool_hash(shared):
+    return stable_hash({k:shared[k] for k in ('A','valid','filtered','t','s','span','dt','noise_floor','walls')})
+
+
+def extract_shared_upstream(maps, noise_floor):
+    a = np.asarray(maps['A'],float).copy()
+    valid = np.asarray(maps['valid_mask'],bool) & np.isfinite(a)
+    t = np.asarray(maps['interval_center_s'],float).copy()
+    s = np.asarray(maps['s'],float).copy()
+    if a.shape != (len(t),2,len(s)) or valid.shape != a.shape:
+        raise ValueError('Expected native time x wall x section arrays')
+    dt = float(np.median(np.diff(t)))
+    span = float(np.median(maps['interval_dt_s']))
+    filtered = filtered_runs(a,valid,t)
+    finite = np.isfinite(filtered)
+    observable = bool((finite[:,:,:-2] & finite[:,:,1:-1] & finite[:,:,2:]).any()) if len(s)>=3 else False
+    exposure = observation_union(dict(maps,valid_mask=valid),min_run_s=12.)
+    if observable != bool(exposure['seconds']>0):
+        raise RuntimeError('Detector support and observation support diverged')
+    walls=[]
+    if observable:
+        for wall in (0,1):
+            report=detect_partial(a[:,wall],valid[:,wall],t,s,noise_floor=noise_floor)
+            report.pop('filtered_A')
+            splits=[decide_split(prepare_parent(a[:,wall],valid[:,wall],t,s,parent,
+                         noise_floor=noise_floor,measurement_span_s=span),minimum_adjacent_support=3)
+                    for parent in report['events']]
+            ownership=reconcile(report,splits,t,valid[:,wall],measurement_span_s=span)
+            walls.append(dict(wall=wall,parent_report=report,split_proposals=splits,reconciliation=ownership))
+    shared=dict(A=a,valid=valid,filtered=filtered,t=t,s=s,span=span,dt=dt,
+                noise_floor=float(noise_floor),walls=walls,observable=observable,exposure=exposure)
+    for x in (a,valid,filtered,t,s):
+        x.setflags(write=False)
+    shared['pool_hash']=pool_hash(shared)
+    return shared
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/experiments/step2_salience_sandbox/upstream.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/experiments/step2_salience_sandbox/mechanism_2x2/__init__.py | git_blob_sha=02a65cd55d2b79674a38e5e35797f01c08030b27 ================
+"""Prelocked Dev-only pairing x filter mechanism experiment."""
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/experiments/step2_salience_sandbox/mechanism_2x2/__init__.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/experiments/step2_salience_sandbox/mechanism_2x2/mechanisms.py | git_blob_sha=0035adc24aef465dc24be4a8676869c840239259 ================
+"""Exactly one amplitude rule and one Butterworth filter; scoped experiment hooks."""
+from contextlib import contextmanager,ExitStack
+from unittest.mock import patch
+import numpy as np
+from scipy.signal import butter,sosfiltfilt
+from analysis.mse_pregnancy_association.code import activity_strength as strength
+from analysis.mse_pregnancy_association.code import partial_phase_events as partial
+from ..upstream import stable_hash
+
+MODELS=('M0','M1','M2','M3')
+CORE=partial.baseline
+ORIGINAL_PAIR=CORE._pair_phases
+ORIGINAL_DETECT=CORE.detect_radial_events
+ORIGINAL_OBSERVED=partial.observed_lobes
+ORIGINAL_FFT=CORE.band_limited_signal
+OLD_STRENGTH_FILTER=strength.band_limited_signal
+
+@contextmanager
+def filter_only(model):
+    with ExitStack() as stack:
+        if model in ('M2','M3'):
+            stack.enter_context(patch.object(CORE,'band_limited_signal',butter_run))
+            stack.enter_context(patch.object(strength,'band_limited_signal',butter_run))
+        yield
+
+def butter_run(values,t,band_cpm=(.5,5.)):
+    assert tuple(band_cpm)==(.5,5.),'Only the one prelocked band is allowed'
+    fs=1/float(np.median(np.diff(t)))
+    sos=butter(2,[.5/60,5/60],btype='bandpass',fs=fs,output='sos')
+    return sosfiltfilt(sos,np.asarray(values,float),axis=0)
+
+def component_factors(ridges,edges,filtered):
+    """Normalize only within the pre-weight candidate-edge connected component."""
+    adjacency={i:set() for edge in edges for i in edge}
+    for a,b in edges:adjacency[a].add(b);adjacency[b].add(a)
+    components=[];owner={}
+    for first in sorted(adjacency):
+        if first in owner:continue
+        members=set();todo=[first]
+        while todo:
+            n=todo.pop()
+            if n in members:continue
+            members.add(n);todo.extend(adjacency[n]-members)
+        index=len(components);components.append(sorted(members))
+        for n in members:owner[n]=index
+    amplitudes={};references={}
+    for index,members in enumerate(components):
+        references[index]={}
+        for rid in members:
+            for node in ridges[rid]['nodes']:
+                c=node['column'];samples=filtered[node['first']:node['last']+1,c]
+                # This is a production lobe inside an already-valid run. An
+                # inconsistent/missing amplitude is an implementation failure,
+                # never a new validity exclusion or silently dropped section.
+                assert len(samples)>0 and np.isfinite(samples).all()
+                value=float(np.max(abs(samples)))
+                assert value==node['amplitude']
+                amplitudes[rid,c]=value
+                references[index][c]=max(references[index].get(c,0.),value)
+    result={}
+    for key,edge in edges.items():
+        a,b=key;index=owner[a];assert owner[b]==index
+        ids=edge['columns'];ai=np.array([amplitudes[a,c] for c in ids]);aj=np.array([amplitudes[b,c] for c in ids])
+        reference=np.array([references[index][c] for c in ids])
+        joint=np.zeros(len(ids));positive=reference>0
+        joint[positive]=np.minimum(ai[positive]/reference[positive],aj[positive]/reference[positive])
+        factor=float(np.median(joint));assert 0<=factor<=1
+        result[key]=dict(component_id=index,component_ridge_ids=components[index],sections=list(ids),
+            phase_i_amplitude=ai.tolist(),phase_j_amplitude=aj.tolist(),R=reference.tolist(),section_joint_factor=joint.tolist(),G=factor,
+            phase_i_amplitude_summary=dict(min=float(ai.min()),median=float(np.median(ai)),max=float(ai.max())),
+            phase_j_amplitude_summary=dict(min=float(aj.min()),median=float(np.median(aj)),max=float(aj.max())))
+    return result
+
+def weighted_pair(ridges,edges,filtered,apply_factor,force_one=False):
+    factors=component_factors(ridges,edges,filtered);weighted={};audit=[]
+    for key,edge in edges.items():
+        factor=1. if force_one else factors[key]['G']
+        old=edge['association_weight'];new=old*factor
+        used=new if apply_factor else old
+        weighted[key]=dict(edge,association_weight=used)
+        audit.append(dict(ridge_key=list(key),phase_ridge_ids=[edge['first'],edge['second']],W_old=old,
+                          **factors[key],W_new=new,W_used=used))
+    selected,ambiguous=ORIGINAL_PAIR(ridges,weighted)
+    for row in audit:row['selected']=tuple(row['ridge_key']) in selected
+    return selected,ambiguous,audit
+
+@contextmanager
+def intervention(model,logs=None,force_one=False):
+    """Only global FFT detector/scoring filter and global pairing inputs change.
+
+    split.prepare_parent also calls _pair_phases locally. Those calls bypass
+    the experimental weight entirely. Its original _measure_pair and
+    measurement_span_mean remain untouched, including child ranking.
+    OOB MAD imports its separate original FFT function and stays unchanged.
+    """
+    assert model in MODELS
+    logs=[] if logs is None else logs
+    state={}
+    def detector(*args,**kwargs):
+        assert not state.get('global_detector_active',False)
+        state['global_detector_active']=True
+        try:return ORIGINAL_DETECT(*args,**kwargs)
+        finally:state['global_detector_active']=False
+    def observed(y,valid,t,floor):
+        filtered,columns,unresolved=ORIGINAL_OBSERVED(y,valid,t,floor)
+        state.update(filtered=filtered,t=t,columns=columns)
+        return filtered,columns,unresolved
+    def pairing(ridges,edges):
+        if not state.get('global_detector_active',False):return ORIGINAL_PAIR(ridges,edges)
+        assert 'filtered' in state
+        selected,ambiguous,audit=weighted_pair(ridges,edges,state['filtered'],model in ('M1','M3'),force_one)
+        logs.append(dict(wall=len(logs),ridges=ridges,edges=audit,selected=[list(x) for x in selected],
+                         raw_edge_signature=stable_hash(edges),filtered_signature=stable_hash(state['filtered'])))
+        return selected,ambiguous
+    with ExitStack() as stack:
+        if model in ('M2','M3'):
+            stack.enter_context(patch.object(CORE,'band_limited_signal',butter_run))
+            stack.enter_context(patch.object(strength,'band_limited_signal',butter_run))
+        stack.enter_context(patch.object(partial,'observed_lobes',observed))
+        stack.enter_context(patch.object(CORE,'detect_radial_events',detector))
+        stack.enter_context(patch.object(CORE,'_pair_phases',pairing))
+        yield logs
+    assert CORE._pair_phases is ORIGINAL_PAIR
+    assert CORE.band_limited_signal is ORIGINAL_FFT
+    assert strength.band_limited_signal is OLD_STRENGTH_FILTER
+
+def run_inventory(maps,execute=False):
+    t=maps['interval_center_s'];A=maps['A'];valid=maps['valid_mask']&np.isfinite(A)
+    minimum=max(3,int(np.ceil(12/np.median(np.diff(t)))))
+    rows=[]
+    for wall in (0,1):
+        for c in range(A.shape[2]):
+            for ordinal,(a,b) in enumerate(np.flatnonzero(np.diff(np.r_[False,valid[:,wall,c],False])).reshape(-1,2)):
+                if b-a<minimum:continue
+                row=dict(wall=wall,section=c,run_id=ordinal,first=int(a),last_exclusive=int(b),n_samples=int(b-a),
+                    center_span_s=float(t[b-1]-t[a]),support_seconds=float(maps['interval_end_s'][b-1]-maps['interval_start_s'][a]),
+                    fs=1/float(np.median(np.diff(t[a:b]))),M2_filter_unsupported=False)
+                if execute:
+                    try:
+                        values=butter_run(A[a:b,wall,c],t[a:b])
+                    except ValueError as error:
+                        row.update(M2_filter_unsupported=True,reason=str(error),exception_type=type(error).__name__)
+                    else:
+                        assert np.isfinite(values).all(),'Butterworth produced nonfinite output'
+                rows.append(row)
+    return rows
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/experiments/step2_salience_sandbox/mechanism_2x2/mechanisms.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/uterine_wave/__init__.py | git_blob_sha=3b909b0aa1bc24616253232574052b573347e51c ================
+"""Research measurements of uterine tissue deformation and wave patterns."""
+__version__ = "0.1.0"
+
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/uterine_wave/__init__.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/uterine_wave/amplitude.py | git_blob_sha=458e7da3f63af67a0eaba34d18402f72adb764fc ================
+"""Amplitude-related summaries for complete radial-strain time blocks."""
+import numpy as np
+
+
+def band_limited_signal(values, time_s, band_cpm=(.5, 5.)):
+    """Return a zero-phase FFT band pass of one complete time block.
+
+    ``values`` may have any trailing spatial dimensions.  The result has those
+    trailing dimensions.  This is an interval-strain variability measure, not
+    a single-event peak amplitude.  Missing samples are not filled.
+    """
+    values = np.asarray(values, float)
+    time_s = np.asarray(time_s, float)
+    if values.ndim < 1 or values.shape[0] != len(time_s) or len(time_s) < 3:
+        raise ValueError('Expected time-first values with at least three samples')
+    if not np.isfinite(values).all() or not np.isfinite(time_s).all():
+        raise ValueError('Band-limited SD requires a complete finite block')
+    dt = np.diff(time_s)
+    if np.any(dt <= 0) or not np.allclose(dt, np.median(dt), rtol=1e-5, atol=1e-9):
+        raise ValueError('FFT amplitude requires uniform real timestamps')
+    if not 0 < band_cpm[0] < band_cpm[1]:
+        raise ValueError('Invalid temporal frequency band')
+    centered = values - values.mean(axis=0, keepdims=True)
+    spectrum = np.fft.rfft(centered, axis=0)
+    frequencies = np.fft.rfftfreq(len(time_s), np.median(dt))
+    keep = (frequencies >= band_cpm[0]/60) & (frequencies <= band_cpm[1]/60)
+    spectrum[~keep] = 0
+    return np.fft.irfft(spectrum, n=len(time_s), axis=0)
+
+
+def band_limited_sd(values, time_s, band_cpm=(.5, 5.)):
+    """Return per-column SD after band limiting a complete time block."""
+    return np.std(band_limited_signal(values, time_s, band_cpm), axis=0)
+
+
+def summarize_interval_strain(values, time_s, band_cpm=(.5, 5.)):
+    """Raw and physiological-band SD for one complete interval-strain block."""
+    values = np.asarray(values, float)
+    band_sd = band_limited_sd(values, time_s, band_cpm)
+    raw_sd = np.std(values, axis=0)
+    resolution = 60/(len(time_s)*np.median(np.diff(np.asarray(time_s, float))))
+    bins = np.fft.rfftfreq(len(time_s), np.median(np.diff(time_s)))
+    positive_bins = int(((bins >= band_cpm[0]/60) & (bins <= band_cpm[1]/60)).sum())
+    return dict(
+        definition='band_limited_interval_radial_strain_SD',
+        interpretation='radial_stretch_activity_amplitude',
+        units='dimensionless',
+        depends_on_measurement_interval_and_motion_rate=True,
+        raw_SD_per_pair=raw_sd,
+        raw_SD_mean=float(raw_sd.mean()),
+        band_SD_per_pair=band_sd,
+        band_SD_mean=float(band_sd.mean()),
+        band_cpm=list(band_cpm),
+        time_resolution_cpm=float(resolution),
+        positive_frequency_bins=positive_bins,
+        duration_s=float(time_s[-1]-time_s[0]),
+    )
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/uterine_wave/amplitude.py ================
+
+================ BEGIN FILE: 01_feature_extraction/frozen_runtime_20261126/uterine_wave/radial_events.py | git_blob_sha=2d4f18133d72b87dca6cb4e672a569b930f425a2 ================
+"""Reviewable propagation evidence from radial A(s,t).
+
+Keep short and unpaired structures. Pairing ranks propagation coherence rather
+than event count; engineering diagnostics do not establish physiological truth.
+"""
+from dataclasses import dataclass, asdict
+import numpy as np
+from .amplitude import band_limited_signal
+
+
+@dataclass(frozen=True)
+class RadialWaveConfig:
+    # Fit reference is used jointly with order/phase evidence, not as a veto.
+    min_fit_r2: float = .5
+    synchronous_tolerance_s: float = .5
+
+
+def _runs(mask):
+    return np.flatnonzero(np.diff(np.r_[False, mask, False])).reshape(-1, 2)
+
+
+def _fit(s, t):
+    slope, intercept = np.polyfit(s, t, 1)
+    residual = t-(slope*s+intercept)
+    total = float(np.sum((t-t.mean())**2))
+    return dict(slope=float(slope), intercept=float(intercept),
+                r2=float(1-np.sum(residual**2)/total) if total > 1e-20 else None,
+                rmse_s=float(np.sqrt(np.mean(residual**2))))
+
+
+def _arrival_evidence(s, arrival, dt):
+    fit = _fit(s, arrival)
+    differences = (arrival[None, :] - arrival[:, None])[np.triu_indices(len(s), 1)]
+    resolved = abs(differences) > dt
+    agreement = float(np.mean(differences[resolved] * fit['slope'] > 0)) if resolved.any() else .5
+    extent = abs(fit['slope']) * float(np.ptp(s))
+    # Continuous engineering ranking, not a calibrated probability or p-value.
+    quality = (max(fit['r2'] or 0., 0.) * max(2*agreement-1, 0.) *
+               extent/(extent + 2*fit['rmse_s'] + dt))
+    return dict(**fit, order_agreement=agreement, fitted_time_extent_s=extent,
+                coherence=float(quality))
+
+
+def _describe_arrival(ids, arrival, s, dt, phase_fits, config):
+    evidence = _arrival_evidence(s[ids], arrival, dt)
+    warnings = []
+    delta = np.diff(arrival)
+    monotone = bool(np.all(delta >= -dt) or np.all(delta <= dt))
+    weak_fit = (evidence['r2'] or 0.) < config.min_fit_r2
+    phase_conflict = any(p['slope']*evidence['slope'] < 0 for p in phase_fits)
+    if not monotone: warnings.append('nonmonotone_arrivals')
+    if weak_fit: warnings.append('weak_arrival_fit')
+    if phase_conflict: warnings.append('phase_direction_conflict')
+    if any((p['r2'] or 0.) < config.min_fit_r2 for p in phase_fits):
+        warnings.append('weak_phase_fit')
+    if np.ptp(arrival) <= max(dt, config.synchronous_tolerance_s):
+        kind = 'synchronous'
+    elif not monotone and (weak_fit or phase_conflict):
+        kind = 'complex'
+    else:
+        kind = 'C2F' if evidence['slope'] > 0 else 'F2C'
+    return dict(classification=kind, sections=ids.tolist(),
+                s_start=float(s[ids[0]]), s_end=float(s[ids[-1]]),
+                spatial_span=float(s[ids[-1]]-s[ids[0]]),
+                arrival_time_s=arrival.tolist(), arrival_fit_R2=evidence['r2'],
+                arrival_fit_RMSE_s=evidence['rmse_s'],
+                arrival_time_slope=evidence['slope'], arrival_evidence=evidence,
+                velocity_paths_per_s=float(1/evidence['slope']) if kind in ('C2F','F2C') else None,
+                phase_arrival_fits=phase_fits, quality_flags=warnings)
+
+
+def _measure_pair(edge, ridges, filtered, t, s, config):
+    first, second = [ridges[edge[name]] for name in ('first', 'second')]
+    left = {x['column']: x for x in first['nodes']}
+    right = {x['column']: x for x in second['nodes']}
+    ids = np.asarray(edge['columns'])
+    arrival = []
+    for j in ids:
+        k, k2 = left[j]['last'], right[j]['first']
+        before, after = filtered[k, j], filtered[k2, j]
+        arrival.append(t[k] - before/(after-before)*(t[k2]-t[k]))
+    dt = float(np.median(np.diff(t)))
+    phases = [_arrival_evidence(s[ids], np.array([p[j]['peak_time_s'] for j in ids]), dt)
+              for p in (left, right)]
+    event = _describe_arrival(ids, np.asarray(arrival), s, dt, phases, config)
+    quality = event['arrival_evidence']['coherence']
+    for phase in phases:
+        quality *= phase['coherence']
+    agreeing = sum(p['slope']*event['arrival_time_slope'] > 0 for p in phases)
+    # Shared support contributes only in proportion to temporal coherence.
+    edge['association_weight'] = len(ids)*quality*(1+agreeing)/3
+    event.update(evidence_kind='paired_phase', arrival_marker='between_phase_zero_crossing',
+                 association_weight=edge['association_weight'],
+                 start_s=min(left[j]['start_s'] for j in ids),
+                 end_s=max(right[j]['end_s'] for j in ids),
+                 leading_polarity=first['sign'], phase_ridge_ids=[first['id'], second['id']],
+                 first_phase_arrival_s=[left[j]['peak_time_s'] for j in ids],
+                 second_phase_arrival_s=[right[j]['peak_time_s'] for j in ids],
+                 peak_absolute_rate_per_phase=[max(left[j]['amplitude'] for j in ids),
+                                               max(right[j]['amplitude'] for j in ids)])
+    return event
+
+
+def _lobes(y, valid, t, threshold):
+    filtered = np.full_like(y, np.nan)
+    columns = [[] for _ in range(y.shape[1])]
+    minimum = max(3, int(np.ceil(12/np.median(np.diff(t)))))
+    for col in range(y.shape[1]):
+        for run_id, (begin, end) in enumerate(_runs(valid[:, col])):
+            if end-begin < minimum:
+                continue
+            signal = band_limited_signal(y[begin:end, col], t[begin:end])
+            filtered[begin:end, col] = signal
+            edges = np.r_[0, np.flatnonzero(np.diff(signal >= 0))+1, len(signal)]
+            for sequence, (a, b) in enumerate(zip(edges[:-1], edges[1:])):
+                # A censored phase cannot establish a complete bipolar event.
+                if a == 0 or b == len(signal):
+                    continue
+                peak = int(a+np.argmax(abs(signal[a:b])))
+                amplitude = float(abs(signal[peak]))
+                if amplitude <= max(float(threshold[col]), 1e-12):
+                    continue
+                columns[col].append(dict(column=col, run_id=run_id, sequence=sequence,
+                    sign=1 if signal[peak] > 0 else -1, peak_index=int(begin+peak),
+                    peak_time_s=float(t[begin+peak]), amplitude=amplitude,
+                    first=int(begin+a), last=int(begin+b-1),
+                    start_s=float(t[begin+a]), end_s=float(t[begin+b-1])))
+    return filtered, columns
+
+
+def _ridges(columns, t, s):
+    nodes=[]
+    for column in columns:
+        for node in column:
+            node['id']=len(nodes);nodes.append(node)
+    parent=list(range(len(nodes)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i]=parent[parent[i]];i=parent[i]
+        return i
+
+    for left, right in zip(columns[:-1], columns[1:]):
+        choices=[]
+        for a in left:
+            for b in right:
+                delay=abs(a['peak_time_s']-b['peak_time_s'])
+                scale=.5*((a['end_s']-a['start_s'])+(b['end_s']-b['start_s']))
+                overlap=min(a['end_s'],b['end_s'])-max(a['start_s'],b['start_s'])
+                if a['sign']==b['sign'] and delay<=scale and overlap>=0:
+                    choices.append((delay,a['id'],b['id']))
+        used_left=set();used_right=set()
+        for _, a, b in sorted(choices):
+            if a in used_left or b in used_right:continue
+            parent[find(a)]=find(b);used_left.add(a);used_right.add(b)
+    groups={}
+    for node in nodes:groups.setdefault(find(node['id']),[]).append(node)
+    ridges=[]
+    for group in groups.values():
+        if len(group)<3:continue
+        group=sorted(group,key=lambda node:node['column'])
+        ids=np.array([node['column'] for node in group])
+        arrival=np.array([node['peak_time_s'] for node in group])
+        ridges.append(dict(id=len(ridges), sign=group[0]['sign'], nodes=group,
+                           fit=_fit(s[ids],arrival), center_s=float(np.median(arrival))))
+    return ridges
+
+
+def _phase_edges(ridges):
+    edges={}
+    for i,a in enumerate(ridges):
+        for j in range(i+1,len(ridges)):
+            b=ridges[j]
+            if a['sign']==b['sign']:continue
+            left={node['column']:node for node in a['nodes']}
+            right={node['column']:node for node in b['nodes']}
+            common=sorted(set(left)&set(right))
+            # Adjacent phases must belong to the same continuous track run in
+            # each shared column. No phase pairing over a missing interval.
+            common=[k for k in common if left[k]['run_id']==right[k]['run_id'] and
+                    abs(left[k]['sequence']-right[k]['sequence'])==1]
+            if len(common)<3 or np.any(np.diff(common)!=1):continue
+            delta=np.array([right[k]['peak_time_s']-left[k]['peak_time_s'] for k in common])
+            if not (np.all(delta>0) or np.all(delta<0)):continue
+            early,late=(a,b) if delta.mean()>0 else (b,a)
+            edges[i,j]=dict(first=early['id'], second=late['id'], columns=common,
+                            score=(1,len(common),int(early['sign']<0)))
+    return edges
+
+
+def _pair_phases(ridges, edges):
+    """Non-overlapping adjacent phase pairs, without counting both polarities.
+
+    Maximize shared support weighted by propagation coherence. No reward for
+    pair count or preferred polarity. Unselected phases remain review evidence.
+    """
+    neighbors={i:[] for i in range(len(ridges))}
+    for i,j in edges:neighbors[i].append(j);neighbors[j].append(i)
+    ambiguous=[i for i in neighbors if len(neighbors[i])>1]
+    negative=[i for i in neighbors if ridges[i]['sign']<0 and neighbors[i]]
+    positive=[i for i in neighbors if ridges[i]['sign']>0 and neighbors[i]]
+    if not negative or not positive:return [],ambiguous
+    n=len(negative);m=len(positive)
+    # Dummy columns permit unmatched phases, including zero-coherence pairs.
+    cost=np.zeros((n,m+n),float)
+    cost[:,:m]=1
+    for row,i in enumerate(negative):
+        for col,j in enumerate(positive):
+            edge=edges.get(tuple(sorted((i,j))))
+            if edge is not None:
+                cost[row,col]=-edge['association_weight']
+    # Rectangular shortest-augmenting-path assignment (rows <= columns).
+    u=np.zeros(n+1);v=np.zeros(m+n+1)
+    owner=np.zeros(m+n+1,int);previous=np.zeros(m+n+1,int)
+    for row in range(1,n+1):
+        owner[0]=row;col=0;minimum=np.full(m+n+1,np.inf);used=np.zeros(m+n+1,bool)
+        while True:
+            used[col]=True;current_row=owner[col];delta=np.inf;next_col=0
+            for j in range(1,m+n+1):
+                if used[j]:continue
+                reduced=cost[current_row-1,j-1]-u[current_row]-v[j]
+                if reduced<minimum[j]:minimum[j]=reduced;previous[j]=col
+                if minimum[j]<delta:delta=minimum[j];next_col=j
+            u[owner[used]]+=delta;v[used]-=delta;minimum[~used]-=delta
+            col=next_col
+            if owner[col]==0:break
+        while col:
+            before=previous[col];owner[col]=owner[before];col=before
+    chosen=[]
+    for col in range(1,m+1):
+        if owner[col] and cost[owner[col]-1,col-1]<0:
+            chosen.append(tuple(sorted((negative[owner[col]-1],positive[col-1]))))
+    return chosen,ambiguous
+
+
+def detect_radial_events(signal, valid, time_s, space, *, noise_floor, config=None):
+    """Find radial propagation evidence, with an explicit noise scale.
+
+    noise_floor is an absolute A threshold (s^-1), scalar or one per section.
+    It must come from a stated noise reference, not per-video robust-z scaling.
+    Space stays on the original full cervix-to-fundus axis, without rescaling.
+    """
+    config=config or RadialWaveConfig()
+    y=np.asarray(signal,float);m=np.asarray(valid,bool);t=np.asarray(time_s,float);s=np.asarray(space,float)
+    if (y.shape!=m.shape or y.shape!=(len(t),len(s)) or len(t)<3 or len(s)<3 or
+            not np.isfinite(t).all() or not np.isfinite(s).all() or np.any(np.diff(s)<=0) or
+            np.any((s<0)|(s>1)) or np.any(np.diff(t)<=0) or
+            not np.allclose(np.diff(t),np.median(np.diff(t)),rtol=1e-5,atol=1e-9)):
+        raise ValueError('Expected matching native-uniform time x ordered normalized-space maps')
+    threshold=np.broadcast_to(np.asarray(noise_floor,float),(len(s),))
+    if not np.isfinite(threshold).all() or np.any(threshold<0):raise ValueError('Invalid absolute noise floor')
+    if not 0<=config.min_fit_r2<=1 or config.synchronous_tolerance_s<0:
+        raise ValueError('Invalid radial event support settings')
+    filtered,columns=_lobes(y,m&np.isfinite(y),t,threshold)
+    ridges=_ridges(columns,t,s);edges=_phase_edges(ridges)
+    measured={key:_measure_pair(edge,ridges,filtered,t,s,config) for key,edge in edges.items()}
+    pairs,ambiguous=_pair_phases(ridges,edges);events=[]
+    for key in pairs:
+        events.append(dict(measured[key],event_id='',reviewed=False,
+                           phase_pairing_ambiguous=any(i in ambiguous for i in key)))
+    used={i for key in pairs for i in key}
+    for ridge in ridges:
+        if ridge['id'] in used:continue
+        nodes=ridge['nodes'];ids=np.array([n['column'] for n in nodes])
+        arrival=np.array([n['peak_time_s'] for n in nodes])
+        event=_describe_arrival(ids,arrival,s,float(np.median(np.diff(t))),[],config)
+        event['quality_flags'].append('single_phase_event_identity_unresolved')
+        events.append(dict(event,event_id='',reviewed=False,evidence_kind='single_phase',
+            arrival_marker='phase_peak',start_s=min(n['start_s'] for n in nodes),
+            end_s=max(n['end_s'] for n in nodes),leading_polarity=ridge['sign'],
+            phase_ridge_ids=[ridge['id']],phase_pairing_ambiguous=ridge['id'] in ambiguous,
+            first_phase_arrival_s=arrival.tolist(),second_phase_arrival_s=[],
+            peak_absolute_rate_per_phase=[max(n['amplitude'] for n in nodes)]))
+    for event in events:
+        if event['phase_pairing_ambiguous']:
+            event['quality_flags'].append('alternative_phase_pairing')
+    events.sort(key=lambda event:(np.median(event['arrival_time_s']),event['s_start']))
+    for i,event in enumerate(events,1):event['event_id']=f'candidate_{i:03d}'
+    return dict(status='automatic_radial_wave_candidates_require_review',config=asdict(config),
+        candidate_algorithm='radial_phase_evidence_v2',
+        noise_floor_rate=threshold.copy(),filter_band_cpm=[.5,5.],filtered_A=filtered,
+        events=events,candidate_count=len(events),
+        traveling_candidate_count=sum(e['classification'] in ('C2F','F2C') for e in events),
+        ambiguous_phase_ridge_ids=ambiguous,unpaired_ridge_count=len(ridges)-2*len(pairs),
+        alternative_phase_pairs=[dict(measured[key],selected=key in pairs)
+                                 for key in edges],
+        event_count=None,event_frequency_cpm=None,
+        phase_ridges=[dict(ridge_id=r['id'],sign=r['sign'],sections=[x['column'] for x in r['nodes']],
+                           peak_time_s=[x['peak_time_s'] for x in r['nodes']],fit=r['fit']) for r in ridges])
+
+
+def radial_candidates_from_maps(spacetime, *, noise_floor, s_range=(0.,1.), config=None):
+    """Use current 2 s radial-map interface and retain original section IDs."""
+    a=np.asarray(spacetime['A'],float);valid=np.asarray(spacetime['valid_mask'],bool)
+    t=np.asarray(spacetime['interval_center_s'],float);s=np.asarray(spacetime['s'],float)
+    if a.shape!=(len(t),2,len(s)) or valid.shape!=a.shape:
+        raise ValueError('Expected time x two-wall x section radial maps')
+    if len(s_range)!=2 or not 0<=s_range[0]<s_range[1]<=1:
+        raise ValueError('Invalid anatomical s_range')
+    ids=np.flatnonzero((s>=s_range[0])&(s<=s_range[1]))
+    if len(ids)<3:raise ValueError('Selected region needs at least three native sections')
+    filtered=np.full_like(a,np.nan);walls=[]
+    for wall in (0,1):
+        result=detect_radial_events(a[:,wall][:,ids],valid[:,wall][:,ids],t,s[ids],
+                                   noise_floor=noise_floor,config=config)
+        filtered[:,wall,ids]=result.pop('filtered_A')
+        for event in result['events']:
+            event['event_id']=f"wall{wall}_{event['event_id']}"
+            event['wall']=wall;event['sections']=ids[event['sections']].tolist()
+        for ridge in result['phase_ridges']:ridge['sections']=ids[ridge['sections']].tolist()
+        for edge in result['alternative_phase_pairs']:
+            edge['sections']=ids[edge['sections']].tolist()
+            edge['wall']=wall
+        walls.append(dict(wall=wall,**result))
+    report=dict(status='automatic_radial_wave_candidates_require_review',
+        measurement_source='A_rate',measurement_units='s^-1',source_section_indices=ids.tolist(),
+        requested_s_range=list(s_range),sampled_s_range=[float(s[ids[0]]),float(s[ids[-1]])],
+        center_time_range_s=[float(t[0]),float(t[-1])],
+        nominal_interval_s=float(spacetime.get('nominal_interval_s',np.median(spacetime['interval_dt_s']))),
+        walls=walls,event_count=None,event_frequency_cpm=None,
+        note='Two-wall candidate counts are not summed; review event identity and arrivals before patient rates.')
+    arrays=dict(filtered_A=filtered,candidate_valid_mask=valid&np.isfinite(filtered),
+                interval_center_s=t.copy(),s=s.copy())
+    return report,arrays
+================ END FILE: 01_feature_extraction/frozen_runtime_20261126/uterine_wave/radial_events.py ================
