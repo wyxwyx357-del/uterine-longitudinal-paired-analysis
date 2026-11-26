@@ -473,10 +473,23 @@ def synthetic_checks() -> dict[str, object]:
 
 
 def cache_map(run_root: Path) -> dict[str, Path]:
+    """Return caches only for cases that completed the tracking stage."""
+    completed: set[str] | None = None
+    status_path = run_root / "resumable_status.json"
+    if status_path.is_file():
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        completed = {
+            str(case_id)
+            for case_id, record in status.get("cases", {}).items()
+            if record.get("state") == "complete"
+        }
+
     mapping: dict[str, Path] = {}
     for path in run_root.glob("cases/case_*/trajectory_cache/*.npz"):
         with np.load(path, allow_pickle=False) as archive:
-            case_id = str(archive["case_id"][0])
+            case_id = str(archive["case_id"][0]).strip()
+        if completed is not None and case_id not in completed:
+            continue
         if case_id in mapping:
             raise ValueError(f"Duplicate trajectory cache for {case_id}")
         mapping[case_id] = path
