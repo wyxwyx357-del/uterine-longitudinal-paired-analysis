@@ -18,8 +18,14 @@ DEFAULT_FEATURES = [
 ]
 
 
-def discordant_pairs(df: pd.DataFrame, features: list[str]) -> pd.DataFrame:
-    required = {"patient_id", "clinical_pregnancy"}
+def discordant_patient_summary(df: pd.DataFrame, features: list[str]) -> pd.DataFrame:
+    """Compare all successful vs failed examinations within each patient.
+
+    If a patient has multiple examinations in either outcome group, all are kept.
+    The patient-level contrast uses the median successful examination value minus
+    the median failed examination value. No single pair is selected.
+    """
+    required = {"patient_id", "exam_id", "exam_order", "clinical_pregnancy"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns: {sorted(missing)}")
@@ -32,24 +38,52 @@ def discordant_pairs(df: pd.DataFrame, features: list[str]) -> pd.DataFrame:
         )
         g = g[g["clinical_pregnancy"].isin([0, 1])]
 
-        if len(g) != 2 or set(g["clinical_pregnancy"]) != {0, 1}:
+        if not ({0, 1} <= set(g["clinical_pregnancy"])):
             continue
 
-        failure = g.loc[g["clinical_pregnancy"] == 0].iloc[0]
-        success = g.loc[g["clinical_pregnancy"] == 1].iloc[0]
+        failure = g[g["clinical_pregnancy"] == 0]
+        success = g[g["clinical_pregnancy"] == 1]
 
-        row = {"patient_id": patient_id}
+        row = {
+            "patient_id": patient_id,
+            "failure_exam_n": int(len(failure)),
+            "success_exam_n": int(len(success)),
+        }
+
         for feature in features:
             if feature not in df.columns:
                 continue
-            a = pd.to_numeric(pd.Series([failure[feature]]), errors="coerce").iloc[0]
-            b = pd.to_numeric(pd.Series([success[feature]]), errors="coerce").iloc[0]
-            row[f"{feature}__failure"] = a
-            row[f"{feature}__success"] = b
-            row[f"{feature}__success_minus_failure"] = b - a
+            fail_values = pd.to_numeric(failure[feature], errors="coerce").dropna()
+            succ_values = pd.to_numeric(success[feature], errors="coerce").dropna()
+
+            fail_median = fail_values.median() if not fail_values.empty else np.nan
+            succ_median = succ_values.median() if not succ_values.empty else np.nan
+
+            row[f"{feature}__failure_median"] = fail_median
+            row[f"{feature}__success_median"] = succ_median
+            row[f"{feature}__success_minus_failure"] = succ_median - fail_median
+
         rows.append(row)
 
     return pd.DataFrame(rows)
+
+
+def discordant_exam_trajectory(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep every known-outcome examination from discordant patients."""
+    x = df.copy()
+    x["clinical_pregnancy"] = pd.to_numeric(
+        x["clinical_pregnancy"], errors="coerce"
+    )
+    x = x[x["clinical_pregnancy"].isin([0, 1])]
+
+    ids = []
+    for patient_id, g in x.groupby("patient_id"):
+        if {0, 1} <= set(g["clinical_pregnancy"]):
+            ids.append(patient_id)
+
+    return x[x["patient_id"].isin(ids)].sort_values(
+        ["patient_id", "exam_order"]
+    ).reset_index(drop=True)
 
 
 def summarize(df: pd.DataFrame, features: list[str]) -> pd.DataFrame:
@@ -64,7 +98,7 @@ def summarize(df: pd.DataFrame, features: list[str]) -> pd.DataFrame:
         out.append(
             {
                 "feature": feature,
-                "n": int(s.size),
+                "patient_n": int(s.size),
                 "median_success_minus_failure": float(s.median()),
                 "q1": float(s.quantile(0.25)),
                 "q3": float(s.quantile(0.75)),
@@ -84,14 +118,22 @@ def main() -> None:
     args = p.parse_args()
 
     source = pd.read_csv(args.input_csv)
-    paired = discordant_pairs(source, args.features)
-    summary = summarize(paired, args.features)
+    patient_summary = discordant_patient_summary(source, args.features)
+    trajectory = discordant_exam_trajectory(source)
+    summary = summarize(patient_summary, args.features)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    paired.to_csv(args.output_dir / "discordant_pregnancy_case_level.csv", index=False)
-    summary.to_csv(args.output_dir / "discordant_pregnancy_summary.csv", index=False)
+    trajectory.to_csv(
+        args.output_dir / "discordant_pregnancy_all_exams.csv", index=False
+    )
+    patient_summary.to_csv(
+        args.output_dir / "discordant_pregnancy_patient_summary.csv", index=False
+    )
+    summary.to_csv(
+        args.output_dir / "discordant_pregnancy_feature_summary.csv", index=False
+    )
 
-    print(f"discordant_patients={paired['patient_id'].nunique() if not paired.empty else 0}")
+    print(f"discordant_patients={patient_summary['patient_id'].nunique() if not patient_summary.empty else 0}")
     print(summary.to_string(index=False))
 
 
