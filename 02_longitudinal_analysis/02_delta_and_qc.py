@@ -163,7 +163,7 @@ def summarize_patient_median_direction(
 def qc_delta_associations(changes: pd.DataFrame) -> pd.DataFrame:
     rows = []
     auto_features = cfg.AUTO_PRIMARY + cfg.AUTO_EXPLORATORY
-    qc_features = ["video_duration_s", "tracking_valid_fraction"]
+    qc_features = list(dict.fromkeys(cfg.QC_NUMERIC_COLS))
 
     for feature in auto_features:
         fx = f"{feature}__delta"
