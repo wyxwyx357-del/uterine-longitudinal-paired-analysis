@@ -309,7 +309,16 @@ def main() -> None:
     _add_motility_fields(clinical)
     _add_cohort_flags(clinical)
 
-    auto = _load_auto_features(cfg.AUTO_FEATURES_CSV)
+    feature_path = cfg.resolve_dynamic_features_csv()
+    auto = _load_auto_features(feature_path) if feature_path is not None else None
+    if auto is None:
+        print(
+            "[INFO] No dynamic feature table found. Expected formal file: "
+            f"{cfg.FINAL_DYNAMIC_FEATURES_CSV}; legacy fallback: "
+            f"{cfg.LEGACY_AUTO_FEATURES_CSV}"
+        )
+    else:
+        print(f"[INFO] Dynamic feature table: {feature_path}")
     if auto is not None:
         overlap = [
             c
@@ -359,6 +368,28 @@ def main() -> None:
         "mse",
         "m1_prop_rate_min_per_min",
         "tracking_valid_fraction",
+        "pipeline_version",
+        "a0_status",
+        "anterior_amplitude_status",
+        "posterior_amplitude_status",
+        "mse_status",
+        "mse_decomposition_status",
+        "record_mse_z",
+        "record_mean_bias_sq",
+        "record_sd_scale_sq",
+        "record_time_shape_term",
+        "m1_status",
+        "m1_failure_reason",
+        "m1_algorithm_version",
+        "m1_prop_rate_max_per_min",
+        "m1_prop_count_min",
+        "m1_prop_count_max",
+        "effective_observation_seconds",
+        "effective_observation_minutes",
+        "r2_status",
+        "r2_failure_reason",
+        "r2_version",
+        "r2_retained_posterior_region_count",
         "video_qc",
         "pose_source",
         "video_duration_s",
