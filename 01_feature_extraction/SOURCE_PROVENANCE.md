@@ -1,108 +1,153 @@
 # Feature extraction source provenance
 
-本目录中的算法源码以“迁移已有实现”为原则，不重新设计核心算法。
+本目录遵循一个原则：**迁移并锁定已有测量实现，不根据临床结局重写测量算法。**
 
-## 1. P3 / radial tracking
+## 1. Formal integrated runtime
 
-来源仓库：
+当前正式动态特征运行时位于：
+
+```text
+01_feature_extraction/frozen_runtime_20261126/
+```
+
+当前工作流版本：
+
+```text
+UTERINE_DYNAMIC_FINAL_BATCH_20261126_V1
+```
+
+锁文件：
+
+- `frozen_runtime_20261126/SOURCE_LOCK.json`
+- `frozen_runtime_20261126/FINAL_PIPELINE_SPEC.json`
+
+该 runtime 整合当前 A0 / amplitude / ER / record MSE / M1 / R2 生产链。
+特征计算阶段明确：
+
+```text
+outcomes_read = false
+```
+
+## 2. P3 / radial tracking source
+
+独立 P3 / radial tracking 源码来源：
 
 - `wyxwyx357-del/uterine-tracking`
-- 该仓库自身记录来源基线：`wyxwyx357-del/end@a9cf11b95293e395e0a90a1e3340393d782a2d5d`
+- 该仓库记录的原始迁移基线：
+  `wyxwyx357-del/end@a9cf11b95293e395e0a90a1e3340393d782a2d5d`
 
-迁入位置：
+保留位置：
 
 - `tracking/peristalsis_pipeline/`
 - `tracking/entrypoints/`
-
-核心迁入文件保持来源文本内容，包括：
-
-- `tracking_lk.py`
-- `tracking_mesh.py`
-- `radial_pair_geometry.py`
-- `tracking_huang_fusion.py`
-- `tracking_huang_wall_fusion.py`
-- `tracking_huang_radial_pairs.py`
-- P3 boundary correction / anatomical QC / artifact QC
-- tracking-only pipeline entrypoint
-
-来源迁移清单保存在：
-
 - `tracking/MIGRATION_MANIFEST_SOURCE.md`
 
-## 2. A0 -> radial deformation / amplitude / ER / mode / candidate events
+这套独立追踪源码用于来源审计和既有 P3 链复现，不应在未验证的情况下与 integrated runtime 中的 A0/R2 tracking 互相替换。
 
-来源仓库：
+## 3. A0 / amplitude / ER source
+
+研究包来源：
 
 - `wyxwyx357-del/uterine-wave-propagation-features`
 
-迁入位置：
+可读源码保留在：
 
 - `wave_features/uterine_wave/`
 
-迁入实际 Python 包，包括：
+正式 integrated runtime 同时保留它锁定的原包路径：
 
-- `geometry.py`
-- `_lk.py`
-- `tracking.py`
-- `quality.py`
-- `deformation.py`
-- `amplitude.py`
-- `spectrum.py`
-- `modes.py`
-- `patient.py`
-- `radial_events.py`
-- `candidate_evidence.py`
-- `events.py`
-- `wavefit.py`
-- `io.py`
-- `frozen_pipeline.py`
-- `input_inventory.py`
-- `controls.py`
-- `cli.py`
+- `frozen_runtime_20261126/analysis/mse_pregnancy_association/code/measurement/`
+- `frozen_runtime_20261126/uterine_wave/`
 
-冻结流水线入口：
+主要包括 geometry、CUDA LK tracking、deformation、amplitude、spectrum、modes、patient、radial_events、quality 等。
 
-- `wave_features/run_frozen_features.py`
+## 4. Frozen M1 / record MSE
 
-该链与 P3 独立仓库有历史/接口关系，但不能把二者混成同一算法版本。
+M1 正式版本：
 
-## 3. Frozen M1 / record MSE
+```text
+m1-global-pairing-unseen-v1
+```
 
-最终源码来源分支：
+来源提交记录在 current `SOURCE_LOCK.json` 中。
 
-- repository: `wyxwyx357-del/uterine-wave-propagation-features`
-- branch: `m1-global-pairing-unseen-v1-source-20261126`
-
-功能分类副本：
+仓库中保留：
 
 - `m1/frozen_source/`
 - `er_mse/frozen_source/`
+- `frozen_m1_mse_bundle/`
 
-同时保留原包路径结构：
+正式生产运行优先使用 `frozen_runtime_20261126/` 中由 `SOURCE_LOCK.json` 锁定的依赖，避免人工拼接不同快照。
 
-- `frozen_m1_mse_bundle/analysis/mse_pregnancy_association/code/`
+## 5. R2 current workflow
 
-这样不修改原源码中的 `analysis.mse_pregnancy_association...` import 路径。
+当前正式 R2 不再视为“源码缺失”。
 
-其中包括：
+正式 current workflow 位于：
 
-- activity counting
-- global event ownership
-- normalized activity
-- patient activity aggregation
-- activity strength
-- record MSE numeric core
-- strict record-MSE measurement boundary
+```text
+01_feature_extraction/frozen_runtime_20261126/r2_frozen/
+```
 
-## 4. R2 local dominant frequency
+版本：
 
-R2 必须保持独立链，不能用本仓库的 ER/spectrum 或 M1 替代。
+```text
+R2_LONGITUDINAL_POSTERIOR_FROZEN_CANDIDATE_V1_1_20261106
+```
 
-当前状态：
+版本/源锁：
 
-- 已确认历史源码文件名和 SHA256 清单；
-- 当前 GitHub 仓库与可访问文件库中未找到对应 Python 源文件字节；
-- 因此 **R2 源码尚未迁入**；
-- `r2_frequency/EXPECTED_SOURCE_HASHES.json` 保存已知冻结哈希，供后续源码到位后逐文件校验。
+- `frozen_runtime_20261126/r2_frozen/FROZEN_SPEC.json`
+- `frozen_runtime_20261126/SOURCE_LOCK.json`
 
-不得根据报告/摘要重写 R2 代码来冒充原冻结实现。
+当前主 R2 定义：
+
+- local wall tangent，cervix → fundus；
+- 0.5–5.0 cpm；
+- frequency grid step 0.05 cpm；
+- posterior wall only；
+- high-confidence + independently validated stable-medium regions；
+- 对可用 posterior cervical / middle / fundal region 的 `optimized_candidate_frequency_cpm` 做等权平均；
+- 无可用 posterior region 时保持 missing，不写 0。
+
+正式检查级字段：
+
+```text
+R2_frequency_cpm
+```
+
+### Historical SHA boundary
+
+2026-11-26 曾尝试恢复更早的 historical requested SHA 集。current workflow 与其中部分文件并非同 SHA，例如 `run_local_motion_frequency.py`。
+
+因此：
+
+> current workflow 是当前锁定工作流，不声称恢复或逐字等同于 historical requested SHA set。
+
+历史旧 SHA 仅作为审计记录保存，不是当前生产锁。当前生产锁以 `SOURCE_LOCK.json` 为准。
+
+## 6. Formal output
+
+current runtime 生成：
+
+```text
+FINAL_DYNAMIC_FEATURES.csv
+```
+
+仓库包装入口：
+
+```text
+01_feature_extraction/run_feature_extraction.py
+```
+
+会把 frozen runtime 的结果原样发布到：
+
+```text
+01_feature_extraction/outputs/FINAL_DYNAMIC_FEATURES.csv
+```
+
+`auto_features.csv` 仅为旧代码兼容投影，不再是正式 source of truth。
+
+## 7. Data governance
+
+不得向公开仓库提交患者姓名、医院ID、视频、DICOM、患者级 tracking/NPZ、临床原表或本地 outputs。
