@@ -112,11 +112,15 @@ def main() -> None:
     args.output.mkdir(parents=True)
 
     source_regions = pd.read_csv(
-        args.source_run / "merged_results" / "optimized_region_frequency.csv"
+        args.source_run / "merged_results" / "optimized_region_frequency.csv",
+        dtype={"case_id": str},
     )
     baseline = pd.read_csv(
-        args.longitudinal_run / "longitudinal_region_frequency.csv"
+        args.longitudinal_run / "longitudinal_region_frequency.csv",
+        dtype={"case_id": str},
     )
+    source_regions["case_id"] = source_regions["case_id"].astype(str).str.strip()
+    baseline["case_id"] = baseline["case_id"].astype(str).str.strip()
     cache_paths = longitudinal.cache_map(args.source_run)
     records = []
     cases = sorted(cache_paths)
