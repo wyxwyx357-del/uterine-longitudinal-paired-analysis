@@ -16,7 +16,7 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_INPUT = ROOT / "outputs" / "frozen_run" / "FINAL_DYNAMIC_FEATURES.csv"
+DEFAULT_INPUT = ROOT / "outputs" / "FINAL_DYNAMIC_FEATURES.csv"
 DEFAULT_OUTPUT = ROOT / "outputs" / "auto_features.csv"
 
 RENAME = {
